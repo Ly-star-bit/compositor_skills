@@ -189,6 +189,17 @@ def suite_looks(work, photo):
         pc.stop()
 
 
+def interior_blending(psd):
+    """Layers saved with Blending Options › Blend Interior Effects as Group (PSD 'infx', written only when on):
+    Advanced Blending, which PhotoCraft composites on the CPU for the whole document."""
+    data = open(psd, "rb").read()
+    flags, i = [], data.find(b"8BIMinfx")
+    while i >= 0:
+        flags.append(data[i + 12])
+        i = data.find(b"8BIMinfx", i + 12)
+    return sum(1 for f in flags if f)
+
+
 def suite_glow(work, photo):
     print("== glow: styles and colours, against the builder")
     pc = Pc(work)
@@ -202,6 +213,11 @@ def suite_glow(work, photo):
             diff(pc.render(os.path.join(work, "pc_glow.png")),
                  builder_render(os.path.join(keep, "01-init.comp"), os.path.join(work, "rb_glow.png")),
                  f"glow {spec}", *limits)
+            psd = os.path.join(work, "glow.psd")
+            if os.path.exists(psd):
+                os.remove(psd)
+            pc.s.call("doc.save", {"path": psd})
+            ok(interior_blending(psd) == 0, f"glow {spec}: no Advanced Blending, so PhotoCraft keeps the GPU compositor")
             pc.close()
     finally:
         pc.stop()

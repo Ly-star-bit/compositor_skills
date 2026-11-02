@@ -411,17 +411,27 @@ class Converter:
             self.doc.select(anchor)
         layer_id = self.doc.place(self.comp.file(record["imageFile"]), smart=smart)
         self.doc.move_above(layer_id, anchor)
-        self.finish(layer_id, record, scale)
+        overlay = (record.get("effects") or {}).get("colorOverlay")
+        # A glow (mist, halation): Compositor recolours the layer with its colour overlay, then screens it.
+        # Photoshop-style apps blend a colour overlay on its own (a gold glow pasted on, not lit) unless interior
+        # effects blend as a group, an Advanced Blending option PhotoCraft composites on the CPU, for the whole
+        # document on every redraw. A Screen group around the layer, drawn Normal inside, gives the same light and
+        # keeps the GPU; the colour stays the layer's own overlay to change.
+        glow = overlay is not None and record.get("blendMode") == "Screen"
+        self.finish(layer_id, dict(record, name="光 · 正常模式（改色用这层的颜色叠加）") if glow else record, scale,
+                    blend="Normal" if glow else None)
         if record.get("maskFile"):
             self.doc.mask(layer_id, self.comp.file(record["maskFile"]))
-        overlay = (record.get("effects") or {}).get("colorOverlay")
         if overlay and overlay.get("enabled", True):
             color = "#" + "".join(f"{round(overlay[c] * 255):02X}" for c in ("red", "green", "blue"))
             self.doc.select(layer_id)
             self.doc.run("layer.layerStyle.colorOverlay", {"color": color, "opacity": round(overlay.get("opacity", 1) * 100)})
-            # Compositor recolours the layer, then screens it; Photoshop-style apps blend a colour overlay on its
-            # own unless interior effects blend as a group (off by default; off, a gold glow is pasted on, not lit).
-            self.doc.run("layer.layerStyle.blendingOptions", {"layer": layer_id, "blendInteriorEffectsAsGroup": True})
+        if glow:
+            self.doc.select(layer_id)
+            r = self.doc.run("layer.groupLayers", {"name": record["name"], "opacity": 100}) or {}
+            group = r.get("layer") or self.doc.find(layer_id).parent.id
+            self.doc.blend(group, "Screen")
+            return group
         return layer_id
 
     def adjustment(self, record, anchor, scale):
