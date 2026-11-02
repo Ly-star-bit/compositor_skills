@@ -1,0 +1,107 @@
+# Tests on every push and pull request; on main, once they pass, a release: Compositor 工具.dmg built from app/ and the
+# skill folder (both skills, with the disk image inside, as compositor-retouch-<date>.zip), tagged v<YYYY.MM.DD>
+# (v<YYYY.MM.DD>.2, .3 ... for more the same day). Everything runs on GitHub's macOS 26 (Apple silicon) runners: the
+# app needs the macOS 26 SDK, the skills Apple Vision.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: App logic tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Logic tests (settings → command line, naming, output parsing, the PhotoCraft tab)
+        run: app/Tests/run.sh
+
+  photocraft:
+    name: PhotoCraft skill tests
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m pip install --disable-pip-version-check -q "opencv-python-headless<5" pillow numpy
+      - name: Cache photocraft-cli and the test photo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/photocraft-retouch/photocraft-cli-*
+            ~/Library/Caches/photocraft-retouch/tests/collins_orig.jpg
+          key: photocraft-${{ hashFiles('photocraft-retouch/scripts/photocraft.py') }}
+      - name: photocraft-cli (the pinned release, SHA-256 checked)
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' photocraft-retouch/scripts/photocraft.py)
+          sha=$(sed -n 's/^ZIP_SHA256 = "\(.*\)"/\1/p' photocraft-retouch/scripts/photocraft.py)
+          target="$HOME/Library/Caches/photocraft-retouch/photocraft-cli-$version"
+          if [ ! -x "$target/photocraft-cli-$version-macos-universal/photocraft-cli" ]; then
+            zip="$RUNNER_TEMP/cli.zip"
+            curl -fsSL --retry 3 -o "$zip" \
+              "https://github.com/storytold/photocraft/releases/download/v$version/photocraft-cli-$version-macos-universal.zip"
+            echo "$sha  $zip" | shasum -a 256 -c -
+            rm -rf "$target" && mkdir -p "$target" && ditto -x -k "$zip" "$target"
+          fi
+          "$target/photocraft-cli-$version-macos-universal/photocraft-cli" --version
+      - name: Tests (PhotoCraft output against retouch_builder's renders, append, refresh, errors)
+        run: PYTHON=python photocraft-retouch/tests/run.sh
+
+  release:
+    name: Release
+    needs: [app, photocraft]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: macos-26
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build Compositor 工具.dmg
+        run: app/build.sh "$RUNNER_TEMP/Compositor 工具.dmg"
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          base="v$(date -u +%Y.%m.%d)"
+          tag="$base"; n=2
+          while git rev-parse -q --verify "refs/tags/$tag" > /dev/null; do tag="$base.$n"; n=$((n + 1)); done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "stamp=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+      - name: Package the skill folder
+        id: package
+        run: |
+          set -euo pipefail
+          pkg="$RUNNER_TEMP/pkg"
+          mkdir -p "$pkg"
+          git archive --format=tar --prefix=compositor-retouch/ HEAD | tar -x -C "$pkg"
+          rm -rf "$pkg/compositor-retouch/.github"
+          cp "$RUNNER_TEMP/Compositor 工具.dmg" "$pkg/compositor-retouch/"
+          zip="$RUNNER_TEMP/compositor-retouch-${{ steps.version.outputs.stamp }}.zip"
+          (cd "$pkg" && zip -qry "$zip" compositor-retouch)
+          dmg="$RUNNER_TEMP/Compositor-Tool-${{ steps.version.outputs.tag }}.dmg"
+          cp "$RUNNER_TEMP/Compositor 工具.dmg" "$dmg"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "${{ steps.package.outputs.zip }}#技能文件夹（compositor-retouch + photocraft-retouch，含 Compositor 工具.dmg）" \
+            "${{ steps.package.outputs.dmg }}#Compositor 工具.dmg（macOS 26，Apple 芯片）" \
+            --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
