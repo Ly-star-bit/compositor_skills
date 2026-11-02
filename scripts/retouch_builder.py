@@ -81,7 +81,7 @@ try:
     # Compositor keeps an HDR layer as OpenEXR (format 13); OpenCV decodes that only when told to before it loads.
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
-    from PIL import Image, ImageFilter, ImageOps
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 except ImportError as error:
     sys.exit(f"[Error] missing Python package '{error.name}'. Install the dependencies with:\n"
              f"  python3 -m pip install 'opencv-python-headless<5' pillow numpy")
@@ -3914,10 +3914,47 @@ def face_crop(project):
             slice(max(0, int(x0 - pad_x)), min(project.width, int(x1 + pad_x))))
 
 
+def _label_font(size):
+    """A font with Chinese for the check images' labels (macOS system fonts), else Pillow's own."""
+    for name in ("Hiragino Sans GB.ttc", "PingFang.ttc", "STHeiti Light.ttc"):
+        try:
+            return ImageFont.truetype(os.path.join("/System/Library/Fonts", name), size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def contact_sheet(rows, width=1600, gap=8, strip=52):
+    """Rows of labelled images on one sheet: each row's images side by side in cells half `width` wide, a label
+    above each, so an agent reads one picture instead of several (it is shown reduced to about 1500 px across)."""
+    font = _label_font(36)
+    cell = (width - gap) // 2
+    blocks = []
+    for cells in rows:
+        scaled = [(label, cv2.resize(image, (cell, max(1, round(image.shape[0] * cell / image.shape[1]))),
+                                     interpolation=cv2.INTER_AREA)) for label, image in cells]
+        block = Image.new("RGB", (width, strip + max(image.shape[0] for _, image in scaled)), "white")
+        draw = ImageDraw.Draw(block)
+        for column, (label, image) in enumerate(scaled):
+            draw.text((column * (cell + gap) + 12, 6), label, fill=(40, 40, 40), font=font)
+            block.paste(Image.fromarray(image), (column * (cell + gap), strip))
+        blocks.append(block)
+    sheet = Image.new("RGB", (width, sum(block.height for block in blocks) + gap * (len(blocks) - 1)), "white")
+    y = 0
+    for block in blocks:
+        sheet.paste(block, (0, y))
+        y += block.height + gap
+    return sheet
+
+
 def write_checks(project, path):
+    """The check images, overview.jpg first: the face before and after the skin stack, the skin mask and the
+    pre-painted feature masks on one sheet (one Read for an agent), then each on its own, and the grade's and the
+    glow's before/after frames when there are any."""
     folder = os.path.splitext(path)[0] + ".checks"
     os.makedirs(folder, exist_ok=True)
     written = []
+    sheet = []
 
     # glow.jpg and look.jpg: the whole frame before and after, side by side.
     for name, check in (("glow.jpg", project.glow_check), ("look.jpg", project.look_check)):
@@ -3971,14 +4008,22 @@ def write_checks(project, path):
     crop = base[box]
     fit = min(1.0, 900.0 / crop.shape[0], 800.0 / crop.shape[1])
     size = (max(1, round(crop.shape[1] * fit)), max(1, round(crop.shape[0] * fit)))
+    # The sheet's mask panel: the faces with more room around them (the neck and shoulders, where the mask should
+    # stop), not the whole frame, so a face in a full-length shot stays large enough to judge.
+    wide = []
+    for extent, (rows, start) in zip(overlay.shape[:2], ((box[0], top), (box[1], left))):
+        length = rows.stop - rows.start
+        wide.append(slice(max(0, round((start - 0.4 * length) * scale)), min(extent, round((start + 1.4 * length) * scale))))
+    sheet.append([("皮肤蒙版", np.ascontiguousarray(overlay[wide[0], wide[1]]))])
 
     # before_after.jpg: the skin stack's effect, side by side.
     if project.skin_changed:
         gap = np.full((size[1], 8, 3), 255, np.uint8)
-        pair = np.hstack([cv2.resize(crop, size, interpolation=cv2.INTER_AREA), gap,
-                          cv2.resize(to8(project.work())[box], size, interpolation=cv2.INTER_AREA)])
+        before, after = (cv2.resize(image, size, interpolation=cv2.INTER_AREA) for image in (crop, to8(project.work())[box]))
+        pair = np.hstack([before, gap, after])
         written.append(os.path.join(folder, "before_after.jpg"))
         Image.fromarray(pair).save(written[-1], quality=90)
+        sheet.insert(0, [("修前", before), ("修后", after)])
 
     # features.jpg: the masks painted in from the landmarks, tinted, with the landmarks as dots.
     if project.paintings:
@@ -3994,6 +4039,10 @@ def write_checks(project, path):
                     cv2.circle(view, (round((px - left) * fit), round((py - top) * fit)), 2, (255, 255, 255), -1)
         written.append(os.path.join(folder, "features.jpg"))
         Image.fromarray(view).save(written[-1], quality=90)
+        sheet[-1].append(("五官预涂", view))
+    if sheet:
+        written.insert(0, os.path.join(folder, "overview.jpg"))
+        contact_sheet(sheet).save(written[0], quality=85)
     return written
 
 

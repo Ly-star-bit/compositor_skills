@@ -483,7 +483,7 @@ enum Compositor {
 
     /// The check images, in the order they are worth looking at.
     static func checkImages(in folder: URL) -> [URL] {
-        let order = ["before_after", "masks", "features", "look", "glow"]
+        let order = ["overview", "before_after", "masks", "features", "look", "glow"]
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         return files.filter { $0.pathExtension == "jpg" }.sorted {
             (order.firstIndex(of: $0.deletingPathExtension().lastPathComponent) ?? 99,
@@ -494,6 +494,7 @@ enum Compositor {
 
     static func checkTitle(_ url: URL) -> String {
         switch url.deletingPathExtension().lastPathComponent {
+        case "overview": "总览"
         case "before_after": "修前修后"
         case "masks": "皮肤蒙版"
         case "features": "五官蒙版"

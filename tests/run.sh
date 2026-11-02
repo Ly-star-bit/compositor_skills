@@ -253,6 +253,10 @@ suite_skin_stack() {  # the layers stack in order, on new and existing projects
     echo "  spots the smoothing healed first: $(grep -oE '祛痘 [0-9]+ 处' a.log | head -1)"
     [ -f a.checks/features.jpg ] && echo "  ok: features.jpg (sculpt and eyes painted in)" || echo "  BAD: no features.jpg"
     [ -f a.checks/masks.jpg ] && [ -f a.checks/before_after.jpg ] && echo "  ok: masks.jpg, before_after.jpg" || echo "  BAD: check images missing"
+    has "overview.jpg is the first check image reported" grep -m1 "Check image: .*overview.jpg" a.log
+    "$PY" -c "
+from PIL import Image; im = Image.open('a.checks/overview.jpg')
+print('  ok: overview.jpg is one sheet, %dx%d' % im.size if im.size[0] == 1600 and 1200 <= im.size[1] <= 2600 else '  BAD: overview.jpg %dx%d' % im.size)"
     [ -d a.checks ] && echo "  ok: checks: $(ls a.checks | tr '\n' ' ')" || echo "  BAD: no checks written"
     build --init "$PHOTO" --comp d.comp --preset dr5 --no-checks > d.log 2>&1; want 0 $? "dr5"
     inside d.comp "low and high in the frequency-separation folder" 🎚️ 高频 低频
