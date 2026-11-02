@@ -164,6 +164,27 @@ enum Script {
     }
     static var isBundledCopy: Bool { url?.path.hasPrefix(Bundle.main.bundlePath) ?? false }
 
+    /// photocraft-retouch's script: in the skill folder next to retouch_builder.py's (photocraft-retouch/scripts), or
+    /// the copy inside the app. It runs retouch_builder.py for the layers, the one `url` finds (RETOUCH_BUILDER).
+    static var photocraftOverride: URL?
+    static var photocraftURL: URL? {
+        if let photocraftOverride { return photocraftOverride }
+        if let builder = url {
+            let script = builder.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("photocraft-retouch/scripts/pcraft_retouch.py")
+            if FileManager.default.fileExists(atPath: script.path) { return script }
+        }
+        return Bundle.main.url(forResource: "pcraft_retouch", withExtension: "py", subdirectory: "skill/photocraft-retouch/scripts")
+    }
+
+    static func url(for target: Target) -> URL? { target == .compositor ? url : photocraftURL }
+
+    static func environment(for target: Target) -> [String: String] {
+        var values = environment
+        if target == .photocraft, let builder = url { values["RETOUCH_BUILDER"] = builder.path }
+        return values
+    }
+
     /// What the app ships for the script, so the first photo doesn't wait for them and no compiler is needed: the
     /// Apple Vision face helper, built from the face_landmarks.swift beside the script (passed only while the
     /// script in use sits next to that same source), and the segmentation model.
@@ -193,10 +214,53 @@ enum Compositor {
     }
 }
 
+/// PhotoCraft, the open-source editor the .pcraft documents are for. Unlike Compositor it doesn't watch its files, so
+/// a document changed while open there is reloaded with File › Revert; and it is only ever opened on the user's click.
+enum PhotoCraftApp {
+    static let bundleIdentifier = "ai.storyteller.photocraft"
+    static let cliVersion = "0.19.0"  // photocraft-retouch/scripts/photocraft.py VERSION
+
+    /// The app that opens `document`, when it is PhotoCraft.
+    static func app(toOpen document: URL) -> URL? {
+        [NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier),
+         NSWorkspace.shared.urlForApplication(toOpen: document)]
+            .compactMap { $0 }.first { $0.lastPathComponent.localizedCaseInsensitiveContains("photocraft") }
+    }
+
+    static func open(_ documents: [URL]) {
+        guard let first = documents.first, let app = app(toOpen: first) else { return }
+        NSWorkspace.shared.open(documents, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    /// The engine pcraft_retouch.py will use when it is on this Mac already, as the script looks for it
+    /// (PHOTOCRAFT_CLI, PATH, its cache); without one the first PhotoCraft run downloads it.
+    static var cli: URL? {
+        let fm = FileManager.default
+        if let path = ProcessInfo.processInfo.environment["PHOTOCRAFT_CLI"], fm.isExecutableFile(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(
+            "photocraft-retouch/photocraft-cli-\(cliVersion)/photocraft-cli-\(cliVersion)-macos-universal/photocraft-cli")
+        let candidates = ((ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+                          + ["/opt/homebrew/bin", "/usr/local/bin"]).map { URL(fileURLWithPath: $0).appendingPathComponent("photocraft-cli") }
+        return (candidates + [cache]).first { fm.isExecutableFile(atPath: $0.path) }
+    }
+}
+
 /// The queue: photos and projects, the settings for them, and the run through them.
 @MainActor @Observable final class Studio {
     var jobs: [RetouchJob] = []
     var selection: RetouchJob.ID?
+    /// The tab: which editor photos added now are retouched for, and whose queue the window shows. Remembered when
+    /// `remembers`. Documents keep their own (a .comp is Compositor's, a .pcraft PhotoCraft's).
+    var target: Target = .compositor {
+        didSet {
+            if remembers && target != oldValue { UserDefaults.standard.set(target.rawValue, forKey: "target") }
+            if selectedJob.map({ $0.target != target }) ?? true { selection = visibleJobs.first?.id }
+        }
+    }
+    /// The queue as the current tab shows it.
+    var visibleJobs: [RetouchJob] { jobs.filter { $0.target == target } }
     /// Kept across launches when `remembers` (the app; not the tests): every change is written out.
     var settings = RetouchSettings() {
         didSet { if remembers && settings != oldValue { settings.save() } }
@@ -225,7 +289,10 @@ enum Compositor {
         self.environment = environment
         self.compositor = compositor
         self.remembers = remembers
-        if remembers { settings = RetouchSettings.load() }
+        if remembers {
+            settings = RetouchSettings.load()
+            if let raw = UserDefaults.standard.string(forKey: "target"), let saved = Target(rawValue: raw) { target = saved }
+        }
         compositor.onFrontChange = { [weak self] front in self?.compositorChanged(front) }
     }
 
@@ -264,23 +331,30 @@ enum Compositor {
         return min(1, (Double(batchFinished) + (currentJob?.fraction ?? 0)) / Double(batch.count))
     }
 
-    /// Adds photos and projects (anything else is left out), each once.
+    /// Adds photos and projects (anything else is left out), each once per editor. A photo is retouched for the tab
+    /// it joins in, a document for its own editor; when none of them belongs to the tab, the window turns to theirs.
     func add(_ urls: [URL]) {
-        let known = Set(jobs.map(\.source.standardizedFileURL))
-        let new = urls.map(\.standardizedFileURL).filter { RetouchJob.accepts($0) && !known.contains($0) }
-        jobs += new.map { RetouchJob(source: $0) }
-        if selection == nil { selection = jobs.first?.id }
+        var known = Set(jobs.map { "\($0.target.rawValue):\($0.source.standardizedFileURL.path)" })
+        var new: [RetouchJob] = []
+        for url in urls.map(\.standardizedFileURL) where RetouchJob.accepts(url) {
+            var job = RetouchJob(source: url)
+            job.target = Target.of(document: url) ?? target
+            if known.insert("\(job.target.rawValue):\(url.path)").inserted { new.append(job) }
+        }
+        jobs += new
+        if let first = new.first, !new.contains(where: { $0.target == target }) { target = first.target }
+        if selection == nil { selection = visibleJobs.first?.id ?? jobs.first?.id }
     }
 
     func remove(_ id: RetouchJob.ID) {
         guard jobs.first(where: { $0.id == id })?.status != .running else { return }
         jobs.removeAll { $0.id == id }
-        if selection == id { selection = jobs.first?.id }
+        if selection == id { selection = visibleJobs.first?.id }
     }
 
     func clearFinished() {
         jobs.removeAll { $0.status.isFinished }
-        if selectedJob == nil { selection = jobs.first?.id }
+        if selectedJob == nil { selection = visibleJobs.first?.id }
     }
 
     /// Retouches a project now with the current settings, as Compositor's 精修 buttons do: queued (again, if it ran
@@ -330,6 +404,10 @@ enum Compositor {
         batch = jobs.filter { $0.status == .waiting }.map(\.id)
         defer { isRunning = false; current = nil; run = nil }
         while !stopRequested, let index = jobs.firstIndex(where: { $0.status == .waiting }) {
+            guard let script = jobs[index].target == .compositor ? script : Script.photocraftURL else {
+                jobs[index].status = .failed("找不到 PhotoCraft 版的修图脚本（photocraft-retouch/scripts/pcraft_retouch.py）")
+                continue
+            }
             await process(index, script: script)
         }
     }
@@ -373,14 +451,17 @@ enum Compositor {
         } else {
             var folder: URL? = nil
             if case .folder(let chosen) = settings.output { folder = chosen }
-            project = Arguments.newProject(for: job.source, in: folder) { fm.fileExists(atPath: $0.path) }
+            project = Arguments.newProject(for: job.source, in: folder, documentExtension: job.target.documentExtension) {
+                fm.fileExists(atPath: $0.path)
+            }
         }
         if stopRequested {
             if input != job.source { try? fm.removeItem(at: input) }
             update(id) { $0.status = .cancelled; $0.step = "已取消" }
             return
         }
-        let inCompositor = compositor.currentProject.map { CompositorLink.key($0) == CompositorLink.key(project) } ?? false
+        let inCompositor = job.target == .compositor
+            && (compositor.currentProject.map { CompositorLink.key($0) == CompositorLink.key(project) } ?? false)
         if inCompositor && autoSave {
             update(id) { $0.step = "先在 Compositor 里保存" }
             let outcome = await compositor.saveFront(project)
@@ -393,7 +474,7 @@ enum Compositor {
         }
         let command = [script.path] + Arguments.command(for: job, input: input, project: project, settings: settings,
                                                         inCompositor: inCompositor)
-        let run = CommandRun(environment.python, command, environment: Script.environment)
+        let run = CommandRun(environment.python, command, environment: Script.environment(for: job.target))
         self.run = run
         let status = await run.run { [weak self] line in
             guard let self else { return }
@@ -426,13 +507,14 @@ enum Compositor {
             } else if self.stopRequested {
                 job.status = .cancelled
                 job.step = "已取消"
-            } else if job.lastError?.hasPrefix("project changed on disk") == true && !job.retried {
-                // Compositor saved the project while the script ran, so the script changed nothing: once more,
-                // from the saved project (the save pressed again first finds nothing left to write).
+            } else if !job.retried, let error = job.lastError,
+                      error.hasPrefix("project changed on disk") || Arguments.PhotoCraftMessages.savedMeanwhile(error) {
+                // The editor saved the document while the script ran, so the script changed nothing: once more,
+                // from the saved document (for Compositor the save pressed again first finds nothing left to write).
                 job.retried = true
                 job.status = .waiting
-                job.step = "工程刚被保存过，再跑一次"
-                job.log += "[app] 运行期间 Compositor 又保存了这个工程，这次没有改动它；自动再跑一次\n"
+                job.step = "\(job.target.documentName)刚被保存过，再跑一次"
+                job.log += "[app] 运行期间 \(job.target.title) 又保存了这个\(job.target.documentName)，这次没有改动它；自动再跑一次\n"
             } else {
                 job.status = .failed(Arguments.failure(job.lastError, status: status))
                 job.step = "失败"

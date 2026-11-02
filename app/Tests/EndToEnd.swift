@@ -194,6 +194,41 @@ enum EndToEnd {
         expect(stopper.jobs[0].status == .cancelled, "stop cancels the photo being worked on (\(stopper.jobs[0].status))")
         expect(!fm.fileExists(atPath: work.appendingPathComponent("stop.comp").path), "and leaves no project behind")
 
+        // ---- PhotoCraft: a photo made into a .pcraft document, a look added to it, then 重算 ----
+        // Needs PhotoCraft's engine: there already (PHOTOCRAFT_CLI, PATH, the skill's cache), or PHOTOCRAFT_E2E=1 to let
+        // the script download it (about 107 MB).
+        if PhotoCraftApp.cli != nil || ProcessInfo.processInfo.environment["PHOTOCRAFT_E2E"] == "1" {
+            print("== PhotoCraft")
+            let craft = Studio(environment: environment)
+            craft.target = .photocraft
+            let craftPhoto = work.appendingPathComponent("craft.jpg")
+            try? fm.copyItem(at: photos[0], to: craftPhoto)
+            craft.add([craftPhoto])
+            craft.settings = RetouchSettings(preset: .daily, render: true, checks: true)
+            await craft.start()
+            let made = craft.jobs[0]
+            print("   craft.jpg: \(made.status) \(made.seconds.map { String(format: "%.1fs", $0) } ?? "")")
+            let document = made.project ?? work.appendingPathComponent("craft.pcraft")
+            expect(made.status == .done && document.lastPathComponent == "craft.pcraft" && fm.fileExists(atPath: document.path),
+                   "a photo on the PhotoCraft tab becomes a .pcraft document (\(made.status))")
+            expect(made.render != nil && made.checks.count >= 3, "…with its render and check images (\(made.checks.count))")
+            expect(made.log.contains("[STEP] 1/2 builder") && made.log.contains("[STEP] 2/2 photocraft"), "…step by step")
+
+            let more = Studio(environment: environment)
+            more.add([document])
+            expect(more.jobs.first?.target == .photocraft && more.target == .photocraft, "a dropped .pcraft is PhotoCraft's")
+            more.settings = RetouchSettings(preset: .none, look: .film, render: false, checks: false)
+            await more.start()
+            expect(more.jobs[0].status == .done && more.jobs[0].log.contains("🎬 调色"), "a look is added to the document (\(more.jobs[0].status))")
+            expect(more.jobs[0].log.contains("F12"), "…and the log says to reload it in PhotoCraft")
+            more.refreshNow(document)
+            while more.isRunning || more.jobs[0].status == .waiting { try? await Task.sleep(for: .milliseconds(100)) }
+            expect(more.jobs[0].status == .done && more.jobs[0].log.contains("按现在的画面重算"),
+                   "重算 recomputes the document's smoothing (\(more.jobs[0].status))")
+        } else {
+            print("== PhotoCraft skipped: no photocraft-cli on this Mac (PHOTOCRAFT_E2E=1 lets the script download it)")
+        }
+
         print(failures == 0 ? "PASS end-to-end" : "FAIL end-to-end: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

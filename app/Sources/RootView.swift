@@ -34,19 +34,30 @@ struct RootView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button(action: chooseFiles) { Label("添加", systemImage: "plus") }
-                    .help("添加照片或 .comp 工程（⌘O）")
+                    .help("添加照片、.comp 工程或 .pcraft 文档（⌘O）")
             }
             ToolbarItem(placement: .principal) {
-                if studio.isRunning {
-                    HStack(spacing: 8) {
-                        ProgressBar(fraction: studio.progress, height: 5).frame(width: 140)
-                        Text("\(studio.batchFinished) / \(studio.batch.count)").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                HStack(spacing: 14) {
+                    Picker("修给", selection: $studio.target) {
+                        ForEach(Target.allCases) { target in Text(target.title).tag(target) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 230)
+                    .help("修给哪个编辑器：Compositor（.comp 工程）或 PhotoCraft（.pcraft 文档）。右边的设置两边共用")
+                    if studio.isRunning {
+                        HStack(spacing: 8) {
+                            ProgressBar(fraction: studio.progress, height: 5).frame(width: 140)
+                            Text("\(studio.batchFinished) / \(studio.batch.count)").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                        }
                     }
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button { FloatingMode.shared.enter(studio) } label: { Label("悬浮球", systemImage: "circle.circle") }
-                    .help("缩成浮在 Compositor 上的小圆球：点它选功能，一键精修 Compositor 正在编辑的工程")
+            if studio.target == .compositor {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { FloatingMode.shared.enter(studio) } label: { Label("悬浮球", systemImage: "circle.circle") }
+                        .help("缩成浮在 Compositor 上的小圆球：点它选功能，一键精修 Compositor 正在编辑的工程")
+                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { studio.showInspector.toggle() } label: { Label("设置", systemImage: "sidebar.trailing") }
@@ -71,9 +82,10 @@ struct RootView: View {
     }
 
     private var subtitle: String {
-        if studio.jobs.isEmpty { return "拖入照片开始" }
-        let done = studio.jobs.filter { $0.status == .done }.count
-        return "\(studio.jobs.count) 张 · 完成 \(done)"
+        let jobs = studio.visibleJobs
+        if jobs.isEmpty { return "拖入照片开始" }
+        let done = jobs.filter { $0.status == .done }.count
+        return "\(jobs.count) 张 · 完成 \(done)"
     }
 
     func chooseFiles() { FilePicker.choose(into: studio) }
@@ -81,7 +93,9 @@ struct RootView: View {
 
 /// The open panel for photos and projects (the toolbar's +, the sidebar, the empty view and ⌘O).
 enum FilePicker {
-    static var types: [UTType] { [.jpeg, .png, .tiff, .heic, .heif] + [UTType("com.compositor.project")].compactMap { $0 } }
+    static var types: [UTType] {
+        [.jpeg, .png, .tiff, .heic, .heif] + [UTType("com.compositor.project"), UTType(filenameExtension: "pcraft")].compactMap { $0 }
+    }
 
     @MainActor static func choose(into studio: Studio) {
         let panel = NSOpenPanel()
@@ -90,7 +104,9 @@ enum FilePicker {
         panel.treatsFilePackagesAsDirectories = false
         panel.allowedContentTypes = types
         panel.prompt = "加入队列"
-        panel.message = "选择照片（JPEG、PNG、TIFF、HEIC）或已有的 .comp 工程，可以多选"
+        panel.message = studio.target == .compositor
+            ? "选择照片（JPEG、PNG、TIFF、HEIC）或已有的 .comp 工程，可以多选"
+            : "选择照片（JPEG、PNG、TIFF、HEIC）或已有的 .pcraft 文档，可以多选：照片会新建 PhotoCraft 文档"
         if panel.runModal() == .OK { studio.add(panel.urls) }
     }
 }

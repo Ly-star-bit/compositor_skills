@@ -455,6 +455,70 @@ enum LogicTests {
             expect(studio.jobs[0].refresh, false, "精修 after it adds layers again")
         }
 
+        print("== PhotoCraft")
+        let document = URL(fileURLWithPath: "/shoot/Anna.pcraft")
+        let forPhotoCraft = RetouchJob(source: photo, target: .photocraft)
+        let toDocument = RetouchJob(source: document, target: .photocraft)
+        expect(Arguments.command(for: forPhotoCraft, input: photo, project: document, settings: RetouchSettings()),
+               ["--init", "/shoot/Anna.jpg", "--pcraft", "/shoot/Anna.pcraft", "--preset", "daily"] + tail,
+               "a photo for PhotoCraft: the same options, --pcraft for --comp")
+        var onDocument = RetouchSettings()
+        onDocument.choose(.dr5)
+        expect(Arguments.command(for: toDocument, input: document, project: document, settings: onDocument),
+               ["--pcraft", "/shoot/Anna.pcraft", "--delicious-skin", "--freq-sep", "--dual-curves", "--inspection",
+                "--sculpt", "--eyes", "--grain"] + tail, "DR5 on an existing document goes module by module, as on a project")
+        var recompute = toDocument
+        recompute.refresh = true
+        expect(Arguments.command(for: recompute, input: document, project: document, settings: RetouchSettings()),
+               ["--pcraft", "/shoot/Anna.pcraft", "--refresh", "--render", "--progress"], "重算 a document")
+        var takenDocuments: Set<String> = []
+        let documentName = { Arguments.newProject(for: photo, in: nil, documentExtension: "pcraft") { takenDocuments.contains($0.path) }.lastPathComponent }
+        expect(documentName(), "Anna.pcraft", "a new document beside the photo")
+        takenDocuments = ["/shoot/Anna.pcraft"]
+        expect(documentName(), "Anna 2.pcraft", "a taken document name gets a number")
+        expect(RetouchJob.accepts(document) && toDocument.isProject, true, ".pcraft documents are accepted, as documents")
+        expect([Target.of(document: document), Target.of(document: project), Target.of(document: photo)], [.photocraft, .compositor, nil],
+               "the editor a file belongs to")
+        expect(Arguments.step("1/2 builder")?.title, "计算图层", "a new document: the layers first")
+        expect(Arguments.step("2/2 photocraft").map { ($0.title, $0.fraction) }.map { "\($0.0) \($0.1)" }, "搭建 PhotoCraft 文档 0.41",
+               "then the document")
+        expect(Arguments.step("downloading photocraft-cli-0.19.0-macos-universal.zip (about 107 MB) from the PhotoCraft GitHub release, once")?
+               .title.contains("PhotoCraft 引擎") == true, true, "the engine's first download is shown")
+        expect(Arguments.notice("photocraft-cli 0.19.0 cached at /x (accepted)"), "PhotoCraft 引擎已下载并校验", "…and its end")
+        expect(Arguments.failure("/a/Anna.pcraft was saved (in PhotoCraft?) while this ran: nothing written. Run it again", status: 1)
+               .contains("PhotoCraft 又保存"), true, "saved in PhotoCraft meanwhile, in words")
+        expect(Arguments.PhotoCraftMessages.savedMeanwhile("x was saved (in PhotoCraft?) while this ran"), true, "…which the app runs again")
+        expect(Arguments.failure("/a/Anna.pcraft exists: add --force to replace it", status: 1), "同名文档已经存在", "a taken document")
+        expect(Arguments.failure("/a/X.pcraft is a folder bundle (PhotoCraft's recovery format): open it", status: 1).contains("另存为"),
+               true, "a recovery folder")
+        expect(ModuleGroup.features.modules[0].adapted(to: .photocraft).note.contains("高反差保留"), true,
+               "3D 骨相 says what it is in PhotoCraft")
+        expect(ModuleGroup.features.modules[0].adapted(to: .compositor), ModuleGroup.features.modules[0], "…and stays itself for Compositor")
+
+        let routing = Studio(environment: PythonEnvironment(support: FileManager.default.temporaryDirectory))
+        routing.add([photo])
+        expect(routing.jobs.map(\.target), [.compositor], "a photo joins the tab it is added in")
+        routing.target = .photocraft
+        expect(routing.selection, nil, "another tab shows its own queue")
+        routing.add([photo])
+        expect(routing.jobs.map(\.target), [.compositor, .photocraft], "the same photo once per editor")
+        expect(routing.visibleJobs.map(\.target), [.photocraft], "each tab its own")
+        expect(routing.selectedJob?.target, .photocraft, "and selected there")
+        routing.add([project])
+        expect(routing.jobs.last?.target, .compositor, "a .comp is Compositor's, whichever tab")
+        expect(routing.target, .compositor, "…and the window turns to its tab")
+        routing.add([document])
+        expect((routing.jobs.last?.target, routing.target) == (.photocraft, .photocraft), true, "a .pcraft is PhotoCraft's, and the tab follows")
+
+        let skill = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../..").standardizedFileURL
+        Script.override = skill.appendingPathComponent("scripts/retouch_builder.py")
+        expect(Script.photocraftURL?.path, skill.appendingPathComponent("photocraft-retouch/scripts/pcraft_retouch.py").path,
+               "PhotoCraft's script sits in the skill next to retouch_builder.py's folder")
+        expect(Script.url(for: .photocraft) == Script.photocraftURL && Script.url(for: .compositor) == Script.url, true, "each tab its script")
+        expect(Script.environment(for: .photocraft)["RETOUCH_BUILDER"], Script.override?.path, "and it uses this same retouch_builder.py")
+        expect(Script.environment(for: .compositor)["RETOUCH_BUILDER"], nil, "Compositor's needs none")
+        Script.override = nil
+
         print(failures == 0 ? "PASS logic" : "FAIL logic: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

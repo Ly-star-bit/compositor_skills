@@ -7,14 +7,16 @@ import Synchronization
 enum Arguments {
     /// `Name.comp` next to the photo (or in `folder`), or `Name 2.comp`, `Name 3.comp`... when that is taken: an
     /// existing project is never replaced (the script would refuse without --force, which the app never passes).
-    static func newProject(for photo: URL, in folder: URL?, exists: (URL) -> Bool) -> URL {
+    /// For PhotoCraft the same with `.pcraft`.
+    static func newProject(for photo: URL, in folder: URL?, documentExtension: String = "comp",
+                           exists: (URL) -> Bool) -> URL {
         let directory = folder ?? photo.deletingLastPathComponent()
         let name = photo.deletingPathExtension().lastPathComponent
-        var candidate = directory.appendingPathComponent("\(name).comp")
+        var candidate = directory.appendingPathComponent("\(name).\(documentExtension)")
         var number = 2
         // The check images and render sit beside the project under the same name, so those count as taken too.
         while exists(candidate) || exists(checksFolder(of: candidate)) || exists(renderImage(of: candidate)) {
-            candidate = directory.appendingPathComponent("\(name) \(number).comp")
+            candidate = directory.appendingPathComponent("\(name) \(number).\(documentExtension)")
             number += 1
         }
         return candidate
@@ -118,11 +120,12 @@ enum Arguments {
     /// `inCompositor`: the project is open in Compositor, which shows the result itself, so no preview is rendered.
     static func command(for job: RetouchJob, input: URL, project: URL, settings: RetouchSettings,
                         inCompositor: Bool = false) -> [String] {
+        let document = job.target.documentOption  // --comp, or --pcraft for PhotoCraft's script
         if job.refresh {  // the layers' own settings stand, written in their names
-            return ["--comp", project.path, "--refresh"] + (settings.render && !inCompositor ? ["--render"] : [])
+            return [document, project.path, "--refresh"] + (settings.render && !inCompositor ? ["--render"] : [])
                 + (settings.checks ? [] : ["--no-checks"]) + ["--progress"]
         }
-        var args: [String] = job.isProject ? ["--comp", project.path] : ["--init", input.path, "--comp", project.path]
+        var args: [String] = job.isProject ? [document, project.path] : ["--init", input.path, document, project.path]
         // DR5 and studio are new-project presets in the script; on an existing project their modules go one by one
         let usePreset = settings.preset != .none && !(job.isProject && settings.preset.needsPhoto)
         if usePreset { args += ["--preset", settings.preset.rawValue] }
@@ -170,6 +173,7 @@ enum Arguments {
     /// A --progress line ("2/5 heal", "render", "checks") as what to show and how far along the photo is: the
     /// modules take most of the time, the render and the check images the rest.
     static func step(_ text: String) -> (title: String, fraction: Double)? {
+        if text.hasPrefix("downloading photocraft-cli") { return ("首次下载 PhotoCraft 引擎（约 107 MB）", 0.02) }
         switch text {
         case "render": return ("渲染预览", 0.86)
         case "checks": return ("生成检查图", 0.94)
@@ -190,6 +194,8 @@ enum Arguments {
         case "glow": return "辉光"
         case "grain": return "胶片颗粒"
         case "refresh": return "重算自动层"
+        case "builder": return "计算图层"            // PhotoCraft, a new document: the layers first,
+        case "photocraft": return "搭建 PhotoCraft 文档"  // then the document from them
         default: return key
         }
     }
@@ -206,13 +212,29 @@ enum Arguments {
         if error.contains("already exists") { return "同名工程已经存在" }
         if error.hasPrefix("Compositor would reject") { return "生成的工程 Compositor 会拒绝打开，所以什么都没改（详见运行记录）" }
         if error.hasPrefix("project changed on disk") { return "运行期间 Compositor 又保存了这个工程，这次没有改动它；请再点一次精修" }
+        // photocraft-retouch's
+        if error.contains("exists: add --force") { return "同名文档已经存在" }
+        if PhotoCraftMessages.savedMeanwhile(error) { return "运行期间 PhotoCraft 又保存了这个文档，这次没有改动它；请再点一次精修" }
+        if error.contains("is a folder bundle") { return "这是 PhotoCraft 的自动恢复文件夹：请先在 PhotoCraft 里另存为 .pcraft 文件" }
+        if error.hasPrefix("no document") { return "找不到这个 PhotoCraft 文档，可能被移动或删除了" }
+        if error.hasPrefix("could not download photocraft-cli") || error.hasPrefix("Gatekeeper did not accept") {
+            return "PhotoCraft 引擎没能下载或校验，请检查网络后再试（详见运行记录）"
+        }
+        if error.hasPrefix("retouch_builder.py not found") { return "找不到 Compositor 版的修图脚本 retouch_builder.py（PhotoCraft 版要用它计算图层）" }
         return error
+    }
+
+    /// photocraft-retouch's messages the app acts on.
+    enum PhotoCraftMessages {
+        /// The document was saved in PhotoCraft while the script ran, so it wrote nothing: run once more.
+        static func savedMeanwhile(_ error: String) -> Bool { error.contains("was saved (in PhotoCraft?) while this ran") }
     }
 
     /// [OK] lines worth showing while they happen: the slow first-run downloads and builds. The rest stay in the log.
     static func notice(_ text: String) -> String? {
         if text.hasPrefix("Downloading the hair and skin segmentation model") { return "首次下载人像分割模型（16 MB）" }
         if text.hasPrefix("Building the Apple Vision face helper") { return "首次准备人脸识别组件" }
+        if text.hasPrefix("photocraft-cli") && text.contains("cached at") { return "PhotoCraft 引擎已下载并校验" }
         return nil
     }
 }

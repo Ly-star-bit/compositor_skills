@@ -197,6 +197,30 @@ enum Snapshot {
 
         shoot(SettingsView(environment: environment(.ready)), size: NSSize(width: 520, height: 400),
               to: out.appendingPathComponent("8-settings.png"))
+
+        // the PhotoCraft tab: nothing queued, then a document made and one added to (from the finished folder's .pcraft)
+        let craft = Studio(environment: environment(.ready))
+        craft.target = .photocraft
+        shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), to: out.appendingPathComponent("10-photocraft-empty.png"))
+        let documents = (finished.flatMap { try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? [])
+            .filter { $0.pathExtension == "pcraft" }.sorted { $0.path < $1.path }
+        if let document = documents.first {
+            var made = RetouchJob(source: photoFiles.first ?? document, target: .photocraft)
+            made.status = .done; made.project = document; made.seconds = 5.0; made.finished = Date(); made.step = "完成"
+            let render = Arguments.renderImage(of: document)
+            made.render = fm.fileExists(atPath: render.path) ? render : nil
+            made.checks = Studio.checkImages(in: Arguments.checksFolder(of: document))
+            made.log = "[STEP] 1/2 builder\n[STEP] 2/2 photocraft\n[SUCCESS] \(document.path): 19 layers, 5.0s\n"
+            var added = RetouchJob(source: document, target: .photocraft)
+            added.status = .running; added.step = "调色"; added.fraction = 0.4
+            craft.jobs = [made, added]
+            craft.selection = made.id
+            shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), to: out.appendingPathComponent("10b-photocraft-done.png"))
+            shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), dark: true,
+                  to: out.appendingPathComponent("10c-photocraft-done-dark.png"))
+            craft.target = .compositor
+            shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), to: out.appendingPathComponent("10d-compositor-tab-meanwhile.png"))
+        }
     }
 
     // MARK: disk image window
@@ -267,6 +291,27 @@ struct Columns: View {
             DetailView(studio: studio, addFiles: {})
             Divider()
             InspectorView(studio: studio).frame(width: 330).background(.regularMaterial)
+        }
+    }
+}
+
+/// Columns under the toolbar's tab switch, which offscreen windows don't draw.
+struct TabbedColumns: View {
+    @Bindable var studio: Studio
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Picker("修给", selection: $studio.target) {
+                    ForEach(Target.allCases) { target in Text(target.title).tag(target) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 230)
+                Spacer()
+            }
+            .padding(.vertical, 8)
+            .background(.bar)
+            Divider()
+            Columns(studio: studio)
         }
     }
 }

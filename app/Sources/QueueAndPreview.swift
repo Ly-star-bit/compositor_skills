@@ -8,14 +8,25 @@ struct SidebarView: View {
     var addFiles: () -> Void
 
     var body: some View {
+        let jobs = studio.visibleJobs
         List(selection: $studio.selection) {
             Section {
-                ForEach(studio.jobs) { job in
+                ForEach(jobs) { job in
                     JobRow(job: job)
                         .tag(job.id)
                         .contextMenu {
-                            if let project = job.project, Compositor.app != nil {
-                                Button("在 Compositor 中打开") { Compositor.open([project]) }
+                            if let project = job.project {
+                                if job.target == .compositor, Compositor.app != nil {
+                                    Button("在 Compositor 中打开") { Compositor.open([project]) }
+                                }
+                                if job.target == .photocraft {
+                                    if PhotoCraftApp.app(toOpen: project) != nil {
+                                        Button("在 PhotoCraft 中打开") { PhotoCraftApp.open([project]) }
+                                    }
+                                    if job.status == .done && !studio.isRunning {
+                                        Button("重算自动层（先在 PhotoCraft 里 ⌘S）") { studio.refreshNow(project) }
+                                    }
+                                }
                             }
                             if job.status != .running && job.status != .waiting && !studio.isRunning {
                                 Button("重新排队") { studio.retry(job.id) }
@@ -26,9 +37,9 @@ struct SidebarView: View {
                 }
             } header: {
                 HStack {
-                    Text(studio.jobs.isEmpty ? "队列" : "队列 · \(studio.jobs.count) 张")
+                    Text(jobs.isEmpty ? "队列" : "队列 · \(jobs.count) 张")
                     Spacer()
-                    if studio.finishedCount > 0 && !studio.isRunning {
+                    if jobs.contains(where: { $0.status.isFinished }) && !studio.isRunning {
                         Button("清除已完成") { studio.clearFinished() }
                             .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.accentColor)
                     }
@@ -37,7 +48,7 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .overlay {
-            if studio.jobs.isEmpty {
+            if jobs.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "tray").font(.system(size: 26, weight: .light)).foregroundStyle(.tertiary)
                     Text("还没有照片").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -45,11 +56,14 @@ struct SidebarView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            CompositorCard(studio: studio).padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
+            Group {
+                if studio.target == .compositor { CompositorCard(studio: studio) } else { PhotoCraftCard(studio: studio) }
+            }
+            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
         }
         .safeAreaInset(edge: .bottom) {
             Button(action: addFiles) {
-                Label("添加照片或工程…", systemImage: "plus")
+                Label("添加照片或\(studio.target.documentName)…", systemImage: "plus")
                     .font(.system(size: 12.5, weight: .medium))
                     .frame(maxWidth: .infinity, minHeight: 30)
             }
@@ -64,7 +78,7 @@ struct JobRow: View {
     let job: RetouchJob
     var body: some View {
         HStack(spacing: 10) {
-            DiskImage(url: job.render ?? job.source, maxPixels: 120)
+            DiskImage(url: job.thumbnail, maxPixels: 120)
                 .frame(width: 44, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
@@ -106,16 +120,16 @@ struct DetailView: View {
     var body: some View {
         ZStack {
             backdrop
-            if let job = studio.selectedJob {
+            if let job = studio.selectedJob, job.target == studio.target {
                 preview(job)
-            } else if let project = studio.compositor.currentProject {
+            } else if studio.target == .compositor, let project = studio.compositor.currentProject {
                 VStack(spacing: 4) {
                     CompositorHero(studio: studio, project: project)
                     Button("也可以拖入照片或工程，批量处理…", action: addFiles)
                         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             } else {
-                EmptyDropZone(addFiles: addFiles)
+                EmptyDropZone(target: studio.target, addFiles: addFiles)
             }
         }
     }
@@ -138,8 +152,8 @@ struct DetailView: View {
 
     private func image(for job: RetouchJob, tab: String) -> URL? {
         switch tab {
-        case "result": job.render ?? job.source
-        case "original": job.source
+        case "result": job.render ?? job.thumbnail
+        case "original": job.target == .photocraft && job.isProject ? job.thumbnail : job.source
         default: URL(fileURLWithPath: tab)
         }
     }
@@ -197,7 +211,8 @@ struct DetailView: View {
                 Text(job.name).font(.system(size: 20, weight: .semibold)).lineLimit(1)
                 HStack(spacing: 8) {
                     StatusBadge(status: job.status)
-                    Text(job.isProject ? "已有工程 · 追加图层" : (job.project?.lastPathComponent ?? "新建工程"))
+                    Text(job.isProject ? "已有\(job.target.documentName) · \(job.refresh ? "重算" : "追加图层")"
+                                       : (job.project?.lastPathComponent ?? "新建\(job.target.documentName)"))
                         .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     if let seconds = job.seconds, job.status.isFinished {
                         Text(String(format: "· %.1f 秒", seconds)).font(.system(size: 11.5)).foregroundStyle(.secondary)
@@ -206,21 +221,40 @@ struct DetailView: View {
             }
             Spacer()
             if let project = job.project {
-                Button { Compositor.open([project]) } label: {
-                    Label("在 Compositor 中打开", systemImage: "arrow.up.forward.app")
+                if job.target == .compositor {
+                    Button { Compositor.open([project]) } label: {
+                        Label("在 Compositor 中打开", systemImage: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.ink)
+                    .disabled(Compositor.app == nil)
+                    .help(Compositor.app == nil ? "这台 Mac 上没有找到 Compositor" : "用 Compositor 打开这个工程")
+                } else {
+                    if job.status == .done { RefreshDocumentButton(studio: studio, document: project, label: "重算自动层") }
+                    let app = PhotoCraftApp.app(toOpen: project)
+                    Button { PhotoCraftApp.open([project]) } label: {
+                        Label("在 PhotoCraft 中打开", systemImage: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.ink)
+                    .disabled(app == nil)
+                    .help(app == nil ? "这台 Mac 上没有找到 PhotoCraft（开源，可以从它的 GitHub 发布页下载）" : "用 PhotoCraft 打开这个文档")
                 }
-                .buttonStyle(.glassProminent)
-                .tint(Theme.ink)
-                .disabled(Compositor.app == nil)
-                .help(Compositor.app == nil ? "这台 Mac 上没有找到 Compositor" : "用 Compositor 打开这个工程")
             }
         }
     }
 
     @ViewBuilder private func footer(_ job: RetouchJob) -> some View {
         let problem: String? = if case .failed(let reason) = job.status { reason } else { nil }
-        if problem != nil || !job.warnings.isEmpty || !job.log.isEmpty {
+        let reload = job.target == .photocraft && job.status == .done  // PhotoCraft doesn't watch its files
+        if problem != nil || reload || !job.warnings.isEmpty || !job.log.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
+                if reload {
+                    Label(job.isProject ? "这个文档在 PhotoCraft 里开着的话，按 F12（文件 › 恢复）载入新版本；先别按 ⌘S"
+                                        : "在 PhotoCraft 里打开它继续修；以后追加或重算前先在 PhotoCraft 里 ⌘S，做完按 F12 载入",
+                          systemImage: "arrow.uturn.backward.circle")
+                        .font(.system(size: 12, weight: .medium))
+                }
                 if let problem {
                     Label(problem, systemImage: "xmark.octagon.fill").foregroundStyle(Theme.failure)
                         .font(.system(size: 12, weight: .medium))
@@ -250,17 +284,20 @@ struct DetailView: View {
 
 /// What the middle shows with nothing queued: a place to drop photos.
 struct EmptyDropZone: View {
+    var target: Target = .compositor
     var addFiles: () -> Void
     var body: some View {
         VStack(spacing: 22) {
             ZStack {
                 Circle().fill(.primary.opacity(0.06)).frame(width: 92, height: 92)
-                Image(systemName: "photo.stack").font(.system(size: 36, weight: .regular)).foregroundStyle(.secondary)
+                Image(systemName: target == .compositor ? "photo.stack" : "camera.aperture")
+                    .font(.system(size: 36, weight: .regular)).foregroundStyle(.secondary)
             }
             VStack(spacing: 8) {
-                Text("把照片拖到这里").font(.system(size: 26, weight: .semibold))
-                Text("JPEG、PNG、TIFF、HEIC，或者已有的 .comp 工程 · 可以一次拖入很多张")
-                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(target == .compositor ? "把照片拖到这里" : "把照片拖到这里，修成 PhotoCraft 文档").font(.system(size: 26, weight: .semibold))
+                Text(target == .compositor ? "JPEG、PNG、TIFF、HEIC，或者已有的 .comp 工程 · 可以一次拖入很多张"
+                                           : "JPEG、PNG、TIFF、HEIC，或者已有的 .pcraft 文档 · 生成图层、蒙版和智能滤镜")
+                    .font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             Button(action: addFiles) {
                 Label("选择照片…", systemImage: "plus").frame(width: 160)

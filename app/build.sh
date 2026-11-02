@@ -25,6 +25,10 @@ echo "== compiling"
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -parse-as-library \
     -o "$OUT/Contents/MacOS/$EXECUTABLE" "$HERE"/Sources/*.swift
 cp "$SKILL/scripts/retouch_builder.py" "$SKILL/scripts/face_landmarks.swift" "$OUT/Contents/Resources/skill/scripts/"
+# the PhotoCraft tab's script, beside it as in the skill folder (it finds retouch_builder.py at ../../scripts)
+mkdir -p "$OUT/Contents/Resources/skill/photocraft-retouch/scripts"
+cp "$SKILL/photocraft-retouch/scripts/pcraft_retouch.py" "$SKILL/photocraft-retouch/scripts/photocraft.py" \
+    "$OUT/Contents/Resources/skill/photocraft-retouch/scripts/"
 
 # shipped so the first photo needn't wait for them (and no compiler is needed on the Mac that runs the app):
 # the Apple Vision face helper, built here, and the segmentation model (MediaPipe, Apache 2.0)
@@ -91,6 +95,12 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
             <key>LSHandlerRank</key>          <string>Alternate</string>
             <key>LSTypeIsPackage</key>        <true/>
             <key>LSItemContentTypes</key>     <array><string>com.compositor.project</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>       <string>PhotoCraft Document</string>
+            <key>CFBundleTypeRole</key>       <string>Editor</string>
+            <key>LSHandlerRank</key>          <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key> <array><string>pcraft</string></array>
         </dict>
     </array>
 </dict>

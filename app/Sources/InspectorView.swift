@@ -76,7 +76,7 @@ struct InspectorView: View {
             SectionTitle(title: group.title, symbol: groupSymbol(group), trailing: picked > 0 ? "\(picked) 项" : nil)
             VStack(spacing: 2) {
                 ForEach(group.modules) { module in
-                    ModuleRow(module: module, inPreset: included.contains(module.flag),
+                    ModuleRow(module: module.adapted(to: studio.target), inPreset: included.contains(module.flag),
                               isOn: Binding(get: { studio.settings.isOn(module.flag) },
                                             set: { studio.settings.set(module.flag, $0) }))
                 }
@@ -129,7 +129,7 @@ struct InspectorView: View {
                 }
                 switch studio.settings.glowColorMode {
                 case .natural:
-                    Text(studio.settings.glow == .mist ? "光晕取高光自己的颜色，之后可以在 Compositor 里换色"
+                    Text(studio.settings.glow == .mist ? "光晕取高光自己的颜色，之后可以在 \(studio.target.title) 里换色"
                                                         : "胶片光晕不着色，就是高光自己的颜色")
                         .font(.system(size: 11.5)).foregroundStyle(.secondary)
                 case .single:
@@ -139,7 +139,8 @@ struct InspectorView: View {
                     ColorChooser(title: "外圈", color: settings.glowOuterColor)
                 }
             } else if studio.settings.glow == .dream {
-                Text("梦幻柔焦是实时的高斯模糊层，用照片自己的颜色")
+                Text(studio.target == .compositor ? "梦幻柔焦是实时的高斯模糊层，用照片自己的颜色"
+                                                  : "梦幻柔焦是盖印的智能对象 + 高斯模糊，用照片自己的颜色")
                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
         }
@@ -313,6 +314,7 @@ struct InspectorView: View {
     private var blockReason: String? {
         if studio.environment.state != .ready { return "运行环境还没准备好" }
         if studio.jobs.isEmpty {
+            if studio.target == .photocraft { return "先把照片或 .pcraft 文档拖到左边" }
             return studio.compositor.currentProject != nil ? "点左上角的「精修这个工程」，或者把照片拖到左边" : "先把照片拖到左边"
         }
         if !studio.settings.doesSomething { return "还没有选择任何效果" }

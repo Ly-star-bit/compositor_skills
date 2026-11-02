@@ -3,6 +3,33 @@ import Foundation
 // What the user picks in the inspector, and what each queued photo or project becomes. Everything here maps onto
 // retouch_builder.py's command line (see Arguments.swift); nothing retouches by itself.
 
+/// Which editor the layers are made for, a tab of its own in the window: Compositor gets a .comp project from
+/// retouch_builder.py, PhotoCraft a .pcraft document from photocraft-retouch/scripts/pcraft_retouch.py, which takes the
+/// same options with --pcraft for --comp. The settings are shared.
+enum Target: String, CaseIterable, Identifiable {
+    case compositor, photocraft
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .compositor: "Compositor"
+        case .photocraft: "PhotoCraft"
+        }
+    }
+    /// The document the script writes, and its option on the command line.
+    var documentExtension: String { self == .compositor ? "comp" : "pcraft" }
+    var documentOption: String { "--" + documentExtension }
+    /// What the window calls that document.
+    var documentName: String { self == .compositor ? "工程" : "文档" }
+    /// The editor a document belongs to, by its extension; nil for a photo.
+    static func of(document url: URL) -> Target? {
+        switch url.pathExtension.lowercased() {
+        case "comp": .compositor
+        case "pcraft": .photocraft
+        default: nil
+        }
+    }
+}
+
 enum Preset: String, CaseIterable, Identifiable {
     case none, daily, dr5, studio
     var id: String { rawValue }
@@ -42,6 +69,15 @@ struct Module: Identifiable, Hashable {
     let note: String
     var id: String { flag }
     var needsLandmarks = false
+    /// What it is in a PhotoCraft document, where that differs (Compositor's live filter layers become stamped Smart
+    /// Objects with a smart filter there).
+    var photocraftNote: String? = nil
+
+    /// The module as the `target` tab describes it.
+    func adapted(to target: Target) -> Module {
+        guard target == .photocraft, let photocraftNote else { return self }
+        return Module(flag: flag, title: title, symbol: symbol, note: photocraftNote, needsLandmarks: needsLandmarks)
+    }
 }
 
 enum ModuleGroup: String, CaseIterable, Identifiable {
@@ -66,8 +102,10 @@ enum ModuleGroup: String, CaseIterable, Identifiable {
             Module(flag: "inspection", title: "观察组", symbol: "eye.trianglebadge.exclamationmark", note: "黑白看明暗、颜色看泛红偏色，默认关闭"),
         ]
         case .features: [
-            Module(flag: "sculpt", title: "3D 骨相", symbol: "cube", note: "Tonal Contrast 实时层，预涂五官的面"),
-            Module(flag: "eyes", title: "眼神光", symbol: "eye", note: "Sharpen 实时层，预涂虹膜"),
+            Module(flag: "sculpt", title: "3D 骨相", symbol: "cube", note: "Tonal Contrast 实时层，预涂五官的面",
+                   photocraftNote: "盖印的智能对象 + 高反差保留，预涂五官的面"),
+            Module(flag: "eyes", title: "眼神光", symbol: "eye", note: "Sharpen 实时层，预涂虹膜",
+                   photocraftNote: "盖印的智能对象 + USM 锐化，预涂虹膜"),
         ]
         }
     }
@@ -319,10 +357,11 @@ enum JobStatus: Equatable {
     }
 }
 
-/// One photo (a new project is made from it) or one existing .comp project (layers are added to it).
+/// One photo (a new project is made from it) or one existing .comp project or .pcraft document (layers are added to it).
 struct RetouchJob: Identifiable, Equatable {
     let id = UUID()
     let source: URL
+    var target: Target = .compositor  // the editor it is retouched for (a document's own; a photo's, the tab it joined in)
     var status: JobStatus = .waiting
     var project: URL? = nil          // the .comp written or added to
     var render: URL? = nil           // the flattened preview, when rendered
@@ -338,12 +377,21 @@ struct RetouchJob: Identifiable, Equatable {
     var refresh = false              // 重算: its automatic layers recomputed in place (--refresh), nothing added
     var retried = false              // run once more after Compositor saved the project mid-run (never twice)
 
-    var isProject: Bool { source.pathExtension.lowercased() == "comp" }
+    var isProject: Bool { Target.of(document: source) != nil }
     var name: String { source.deletingPathExtension().lastPathComponent }
+    /// What stands for it in pictures: its render, else the photo; a .pcraft, which shows nothing by itself, by the
+    /// render left beside it (when there is one).
+    var thumbnail: URL {
+        if let render { return render }
+        if target == .photocraft && isProject {
+            let beside = source.deletingPathExtension().appendingPathExtension("render.jpg")
+            if FileManager.default.fileExists(atPath: beside.path) { return beside }
+        }
+        return source
+    }
 
     static let photoExtensions: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif"]
     static func accepts(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        return ext == "comp" || photoExtensions.contains(ext)
+        Target.of(document: url) != nil || photoExtensions.contains(url.pathExtension.lowercased())
     }
 }

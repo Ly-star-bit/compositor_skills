@@ -1,10 +1,17 @@
 # Compositor 工具.app
 
-`retouch_builder.py` 的 macOS 图形界面，用 SwiftUI 写，需要 macOS 26（Liquid Glass）。所有修图都由 skill 的脚本完成，app 只做三件事：把界面上的选择拼成命令行参数，按队列一张张运行，再把脚本的输出显示成进度、结果和检查图。
+`retouch_builder.py` 的 macOS 图形界面，用 SwiftUI 写，需要 macOS 26（Liquid Glass）。所有修图都由 skill 的脚本完成，app 只做三件事：把界面上的选择拼成命令行参数，按队列一张张运行，再把脚本的输出显示成进度、结果和检查图。工具栏中间的「Compositor | PhotoCraft」切换修给哪个编辑器：PhotoCraft 标签页运行 `photocraft-retouch/scripts/pcraft_retouch.py`（见下文）。
 
 ## 使用
 
 双击 skill 文件夹里的 `Compositor 工具.dmg`，会出现安装窗口：把左边的「Compositor 工具」拖到右边的「应用程序」就装好了。也可以不装，直接在窗口里双击运行。
+
+- **PhotoCraft 标签页**：工具栏中间切到「PhotoCraft」，照片会做成 PhotoCraft 的 `.pcraft` 文档（同样的预设、模块、调色和辉光，右边的设置两个标签页共用），拖入已有的 `.pcraft` 会追加图层。图层由同一个 `retouch_builder.py` 计算，再由 PhotoCraft 的命令行引擎 `photocraft-cli serve` 搭进文档，全程没有窗口；第一次用时脚本自动下载这个引擎（0.19.0，约 107 MB，按 SHA-256 和 Apple 公证校验后缓存在 `~/Library/Caches/photocraft-retouch/`），侧栏的 PhotoCraft 卡片显示它是否已就绪。
+  - 每个标签页有自己的队列：照片按加入时所在的标签页处理，`.comp` 总是 Compositor 的，`.pcraft` 总是 PhotoCraft 的；拖入的全是另一个编辑器的文档时，窗口自动切到那个标签页。「开始精修」按顺序处理两边的全部队列。
+  - PhotoCraft 不监视文件，不会像 Compositor 那样自动载入：追加或重算前先在 PhotoCraft 里 ⌘S，做完在 PhotoCraft 里按 F12（文件 › 恢复）载入。运行期间文档被 PhotoCraft 保存过时，脚本不写入，app 自动再跑一次。
+  - **重算自动层**：在 PhotoCraft 里手修过下面的图层后（先 ⌘S），点卡片上文档旁的「重算」或预览上方的「重算自动层」：磨皮按现在的画面重算，骨相、眼神光、梦幻柔焦（在 PhotoCraft 里是"盖印的智能对象 + 智能滤镜"）重新盖印，不加新图层。
+  - 「在 PhotoCraft 中打开」只在装了 PhotoCraft 时可用，只在点击时打开它。悬浮球是配合 Compositor 窗口用的，PhotoCraft 标签页不显示。
+  - 各种图层在 PhotoCraft 里是什么、和 Compositor 有哪些不同，见 `photocraft-retouch/references/mapping.md`。
 
 - **直接修 Compositor 里正在编辑的工程**：左上角的「Compositor」卡片会自动认出它，点「精修这个工程」就用右边的设置开始修；队列为空时，中间也会大幅显示这个工程。修完 Compositor 会自动载入新图层（它会监视工程文件）。脚本把这次的图层先写在包内的隐藏文件夹 `.retouch/`，最后几毫秒内一起放进去，Compositor 只重载一次；它每次重载都要重新解码工程里所有图层，所以图层越多、16 位层越多，这一下越久。
   - 认出当前工程：Compositor 的窗口不告诉系统工程文件在哪（AXDocument 是空的），只有标题，也就是工程名。所以 app 拿窗口标题去对两份名单：Compositor 进程此刻打开着的 .comp 包（内核的进程文件列表，不需要任何权限，不到一毫秒）和它最近打开过的工程；标题带「— 已编辑」之类的后缀、大小写不同也对得上。读窗口标题要一次「辅助功能」权限：卡片上点「允许读取」，在 系统设置 › 隐私与安全性 › 辅助功能 里打开「Compositor 工具」；它只用来读窗口标题，以及精修前替你按一下它的「存储」。没给权限时，Compositor 只开着一个工程的话也照样认出（卡片上会说明，并留着「允许读取」）；窗口标题对不上任何工程时，卡片会写出这个标题，建议在 Compositor 里 ⌘S 一次或重新打开它。签名带固定的指定要求（bundle id），所以装新版本后权限应该保留；不要手改装好的 app 里的 Info.plist（签名会失效，系统随即不认这份权限），要改就重新跑 `build.sh`；`build.sh` 还会在 `~/Library/Application Support/compositor-retouch/signing/` 准备一张本机自签证书，运行它打印的那条 `security add-trusted-cert` 命令信任一次后，以后就用证书签名。
@@ -61,6 +68,8 @@ app/Tools/snapshot.sh dmg [预览.png]   # 重新生成安装窗口的背景 Res
 
 只要 Xcode 命令行工具里的 `swiftc`，不需要 Xcode 工程。测试和截图都不会打开任何窗口，也不会启动 app。
 
+推送到 GitHub 后，`.github/workflows/ci.yml` 在 GitHub 的 macOS 26 机器上跑逻辑测试和 PhotoCraft 技能的测试；推送到 `main` 且测试都通过时，再构建 dmg、把技能文件夹（含 dmg）打成 `compositor-retouch-<日期>.zip`，以 `v<年.月.日>` 为版本号（同一天再发是 `.2`、`.3`）自动发布到 Releases。也可以在 Actions 页面手动运行它发一版。
+
 端到端测试会检查以下几项：
 
 - 安装的四个步骤；
@@ -105,5 +114,6 @@ app/Tools/snapshot.sh dmg [预览.png]   # 重新生成安装窗口的背景 Res
 | `Sources/CompositorCard.swift` | 侧栏顶部的 Compositor 卡片、中间的「正在编辑」大图、精修按钮 |
 | `Sources/FloatingMode.swift` | 悬浮球：两个不抢焦点的浮动面板（圆球、展开的选择面板）、拖动、切换 |
 | `Sources/FloatingViews.swift` | 圆球的样子和状态、展开面板、功能小块 |
+| `Sources/PhotoCraftCard.swift` | PhotoCraft 标签页侧栏顶部的卡片（引擎状态、怎么载入、这次修过的文档和「重算」） |
 | `Sources/App.swift` | 入口：单窗口、⌘O、设置、Dock 拖放 |
 | `Tests/`, `Tools/` | 测试、截图和图标工具，都和 app 的源码（除了 `App.swift`）一起编译 |
