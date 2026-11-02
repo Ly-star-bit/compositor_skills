@@ -167,7 +167,7 @@ struct RetouchButton: View {
                         }
                         .buttonStyle(.glass).controlSize(.small)
                         .disabled(studio.environment.state != .ready)
-                        .help("手修过下面的图层（比如高低频）后，按工程现在的样子重新计算磨皮、眼神光这两层，"
+                        .help("手修过下面的图层（比如高低频）后，按工程现在的样子重新计算磨皮层（以及旧工程里的眼神光像素层），"
                               + "不加新图层，蒙版和不透明度保留。Compositor 只读得到保存过的内容：先在那里 ⌘S 保存")
                         Text("手修后先 ⌘S 保存").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }

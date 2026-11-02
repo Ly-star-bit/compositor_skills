@@ -22,10 +22,12 @@ Skin stack, right above the photo (in the frequency-separation and skin folders)
                     lips and fades round dark spots; `--delicious-skin manual` starts its mask black, to brush on as
                     in DR5's manual smoothing
 On top:
-  --sculpt          mid-frequency luminance contrast in Soft Light, masked to the face's planes
+  --sculpt          3D sculpt: a live Tonal Contrast layer on the face's planes (format 18+; before that a
+                    mid-frequency contrast pixel layer in Soft Light)
   --neutral-gray    50% gray in Soft Light for dodge & burn with the brush
   --dual-curves     brighten and darken Curves adjustments in Luminosity, black masks
-  --eyes            sharpened, tone-preserving copy, masked to the irises
+  --eyes            eye brilliance: a live Sharpen layer masked to the irises (format 19+; before that a
+                    sharpened pixel copy)
   --look NAME       color grade, a folder of live adjustment layers: airy, film, cool-fair, creamy, hk, bw
   --glow [STYLE[:COLOR[,COLOR]]]
                     glow, repeatable: mist (highlights bloom, shadows stay deep) and halation (film halo) are Screen
@@ -236,6 +238,41 @@ def curves(points):
     record = adjustment("Curves")
     record["curves"]["channels"][0] = [{"x": x, "y": y} for x, y in points]
     return record
+
+
+# A filter adjustment layer's `filterLayerSettings` (version 16+). FilterLayerSettings is decoded by Swift's synthesized
+# Codable, so every one of these shared fields must be present, at a value equal to its clamped self, or Compositor
+# refuses the whole project; they are Compositor's defaults. A filter's own numbers go in a block of their own
+# (`tonal`, `sharpen`; version 18 and 19), within these ranges.
+FILTER_SHARED = {
+    "progressiveFrom": 0, "progressiveTo": 20, "progressiveRadial": False, "progressiveInverted": False,
+    "bloomAmount": 40, "bloomRadius": 24, "rgbSplitDistance": 10, "rgbSplitBlur": 0, "rgbSplitAngle": 0,
+    "rgbSplitRadial": False, "rgbSplitReach": 1000,
+}
+FILTER_SHARED_RANGES = {
+    "progressiveFrom": (0, 250), "progressiveTo": (0, 250), "bloomAmount": (0, 100), "bloomRadius": (1, 150),
+    "rgbSplitDistance": (0, 200), "rgbSplitBlur": (0, 400), "rgbSplitAngle": (-180, 180), "rgbSplitReach": (1, 100_000),
+}
+TONAL_RANGES = {"amount": (0, 100), "radius": (1, 100), "shadows": (-100, 100), "midtones": (-100, 100), "highlights": (-100, 100)}
+SHARPEN_RANGES = {"amount": (0, 300), "radius": (0.1, 20)}
+TONAL_DEFAULTS = {"amount": 50, "radius": 16, "shadows": 40, "midtones": 60, "highlights": 30}
+SHARPEN_DEFAULTS = {"amount": 100, "radius": 1}
+
+
+def filter_layer(**blocks):
+    return {**FILTER_SHARED, **blocks}
+
+
+def tonal_contrast(amount=50, radius=16, shadows=40, midtones=60, highlights=30):
+    """A Tonal Contrast adjustment (version 18): local contrast from the brightness's difference to a Gaussian blur of
+    `radius`, added back at `amount` (50 = Compositor's unit strength), weighted per tone (-100 to 100)."""
+    return adjustment("Tonal Contrast", filterLayerSettings=filter_layer(tonal={
+        "amount": amount, "radius": radius, "shadows": shadows, "midtones": midtones, "highlights": highlights}))
+
+
+def sharpen(amount=100, radius=1):
+    """A Sharpen adjustment (version 19): an unsharp mask of `radius` pixels at `amount` percent."""
+    return adjustment("Sharpen", filterLayerSettings=filter_layer(sharpen={"amount": amount, "radius": radius}))
 
 
 # Photoshop's default hue bands (falloff start, range start, range end, falloff end), as Compositor's.
@@ -1879,6 +1916,82 @@ def _grain(rgb8, gs, origin=(0, 0)):
     return out
 
 
+
+REC709 = np.array([0.2126, 0.7152, 0.0722], np.float32)
+
+
+def blur_reach(sigma):
+    """How far ci_gaussian reads past a pixel, and so how far past its mask a blurring adjustment is computed
+    (Compositor's samplingMargin: three radii and a little)."""
+    return int(math.ceil(3 * sigma)) + 2
+
+
+def ci_kernel(sigma):
+    """Core Image's Gaussian kernel: each tap is the Gaussian's area over its pixel (what an impulse through
+    CIGaussianBlur shows; a point-sampled Gaussian is too peaked at radius 1 and lands a level off in most pixels of a
+    noisy image), out to where the rest is nothing, normalized."""
+    reach = blur_reach(sigma) - 1
+    edges = (np.arange(-reach, reach + 2, dtype=np.float64) - 0.5) / (sigma * math.sqrt(2))
+    kernel = np.diff(np.array([math.erf(v) for v in edges]))
+    return (kernel / kernel.sum()).astype(np.float32)
+
+
+def ci_gaussian(image, sigma, border=cv2.BORDER_REPLICATE):
+    """A Gaussian blur as Core Image's (ci_kernel), separable, at full size: 24 MP at radius 100 takes about a second,
+    and a reduced copy was a few levels off. `border`: what lies beyond the edges (cv2.BORDER_CONSTANT for
+    transparency, as an unclamped Core Image blur sees; cv2.BORDER_REPLICATE for edges carried on past the sides)."""
+    kernel = ci_kernel(sigma)
+    return cv2.sepFilter2D(image, -1, kernel, kernel, borderType=border)
+
+
+def sampling_margin(settings):
+    """How far past its mask an adjustment reads (Compositor's samplingMargin): the blurs' reach, else nothing."""
+    kind, blocks = settings.get("kind"), settings.get("filterLayerSettings") or {}
+    if kind == "Tonal Contrast":
+        return blur_reach(float((blocks.get("tonal") or {}).get("radius", TONAL_DEFAULTS["radius"])))
+    if kind == "Sharpen":
+        return blur_reach(float((blocks.get("sharpen") or {}).get("radius", SHARPEN_DEFAULTS["radius"])))
+    return 0
+
+
+def _tonal_contrast(rgb8, block):
+    """Compositor's Tonal Contrast (AdjustPixels.c adjust_tonal_contrast, its base a Core Image Gaussian blur of the
+    layer, unclamped: transparent beyond the edges, which the kernel divides out): the Rec. 709 brightness's
+    difference from the blurred brightness, squashed by tanh, added to all three channels, weighted by the blurred
+    tone's shadow/midtone/highlight strengths and fading at black and white. 8-bit in, 8-bit out, as Compositor's."""
+    values = {key: float(block.get(key, default)) for key, default in TONAL_DEFAULTS.items()}
+    if values["amount"] <= 0 or not any(values[key] for key in ("shadows", "midtones", "highlights")):
+        return rgb8
+    rgb = rgb8.astype(np.float32)
+    base = np.rint(ci_gaussian(rgb, values["radius"], cv2.BORDER_CONSTANT))
+    kernel = ci_kernel(values["radius"])  # the blurred alpha: the kernel's weight inside the edges, separable
+    reach = len(kernel) // 2
+    inside = [np.convolve(np.ones(n, np.float64), kernel, mode="full")[reach:reach + n] for n in rgb8.shape[:2]]
+    base_alpha = np.rint(np.outer(inside[0], inside[1]) * 255.0).astype(np.float32)
+    base_lum = np.minimum(1.0, base / np.maximum(base_alpha, 1.0)[..., None]) @ REC709
+    rgb /= 255.0
+    lum = rgb @ REC709
+
+    def smooth(low, high, value):
+        t = np.clip((value - low) / (high - low), 0, 1)
+        return t * t * (3.0 - 2.0 * t)
+    shadow, highlight = 1.0 - smooth(0.15, 0.5, base_lum), smooth(0.5, 0.85, base_lum)
+    weight = (values["shadows"] * shadow + values["midtones"] * (1.0 - shadow - highlight) + values["highlights"] * highlight) / 100.0
+    delta = 0.18 * np.tanh((lum - base_lum) * 6.0) * weight * (values["amount"] / 50.0) * (4.0 * lum * (1.0 - lum))
+    out = np.clip(rgb + delta[..., None], 0, 1)
+    out[base_alpha <= 0] = rgb[base_alpha <= 0]
+    return np.rint(out * 255.0).astype(np.uint8)
+
+
+def _sharpen(rgb8, block):
+    """Compositor's Sharpen: Core Image's unsharp mask on the layer with its edges carried on past every side, the
+    difference from a Gaussian blur of `radius` added back at `amount` percent."""
+    values = {key: float(block.get(key, default)) for key, default in SHARPEN_DEFAULTS.items()}
+    rgb = rgb8.astype(np.float32)
+    blurred = ci_gaussian(rgb, values["radius"], cv2.BORDER_REPLICATE)
+    return np.clip(np.rint(rgb + (rgb - blurred) * (values["amount"] / 100.0)), 0, 255).astype(np.uint8)
+
+
 def adjusted(canvas, settings, origin=(0, 0)):
     """What an adjustment layer makes of `canvas` (RGB 0-1, opaque), before its mask, opacity and blend mode: RGB
     0-1, or None for a kind not reproduced here (Motion Blur, Add Noise). Gaussian Blur returns (premultiplied RGB,
@@ -1918,6 +2031,10 @@ def adjusted(canvas, settings, origin=(0, 0)):
         result = _grain(rgb8, settings.get("grainSettings") or {}, origin)
     elif kind == "Invert":
         result = 255 - rgb8
+    elif kind == "Tonal Contrast":
+        result = _tonal_contrast(rgb8, (settings.get("filterLayerSettings") or {}).get("tonal") or {})
+    elif kind == "Sharpen":
+        result = _sharpen(rgb8, (settings.get("filterLayerSettings") or {}).get("sharpen") or {})
     else:
         return None
     return result.astype(np.float32) / 255.0
@@ -1985,6 +2102,8 @@ class Project:
         self._top_up = None
         self.prune = False       # delete images the manifest no longer references (--force)
         self.created_dir = False
+        self.fresh = False       # made by this run: its format version follows what goes in (commit)
+        self.compat = False      # --8bit: only what Compositor before 1.5 reads (format 11, pixel layers)
         self.spots = []          # healed spots, for the check image
         self.hair = None         # hair taken out of the skin mask, for the check image
         self.paintings = {}      # masks painted in from the landmarks, for the check image
@@ -2007,6 +2126,13 @@ class Project:
     @property
     def width(self):
         return self.manifest["width"]
+
+    def allows(self, kind):
+        """Whether an adjustment layer of `kind` can go in this project: its format version has it (KIND_VERSIONS),
+        or the project is new this run, so its version follows what goes in (commit); not with --8bit, which asks for
+        the shapes Compositor before 1.5 reads. An existing project keeps its version: Compositor writes the newest
+        (20) whenever it saves, so a project the user has saved there takes every kind."""
+        return int(self.manifest.get("version") or 0) >= KIND_VERSIONS.get(kind, 7) or (self.fresh and not self.compat)
 
     @property
     def height(self):
@@ -2071,6 +2197,7 @@ class Project:
         project = cls(path, manifest)
         project.created_dir = created
         project.prune = previous is not None or force
+        project.fresh, project.compat = True, not deep
         if imported:
             try:
                 record = project.file_layer("原图 (Original)", imported[0])
@@ -2221,14 +2348,16 @@ class Project:
             if self._is_noop(record):
                 return canvas
             coverage = self.adjustment_coverage(record) * cover()
-            if settings.get("kind") != "Gaussian Blur":  # one pixel at a time: only where the mask lets it act
-                rows, columns = np.flatnonzero(coverage.any(axis=1)), np.flatnonzero(coverage.any(axis=0))
+            if settings.get("kind") != "Gaussian Blur":  # only where the mask lets it act (and, for a blur, as far
+                rows, columns = np.flatnonzero(coverage.any(axis=1)), np.flatnonzero(coverage.any(axis=0))  # as it reads)
                 if not len(rows):
                     return canvas
-                box = (slice(rows[0], rows[-1] + 1), slice(columns[0], columns[-1] + 1))
-                if (rows[-1] + 1 - rows[0]) * (columns[-1] + 1 - columns[0]) < coverage.size:
+                margin = sampling_margin(settings)
+                box = (slice(max(0, rows[0] - margin), min(self.height, rows[-1] + 1 + margin)),
+                       slice(max(0, columns[0] - margin), min(self.width, columns[-1] + 1 + margin)))
+                if (box[0].stop - box[0].start) * (box[1].stop - box[1].start) < coverage.size:
                     inside = self._draw_adjustment(canvas[box], settings, record, coverage[box], quiet,
-                                                   origin=(columns[0], rows[0]))
+                                                   origin=(box[1].start, box[0].start))
                     out = canvas.copy()
                     out[box] = inside
                     return out
@@ -2773,7 +2902,7 @@ class Project:
         (which reloads a third of a second after the last change it sees) reloads once, with it all in place."""
         self._check_stamp()
         self.finish_saving()
-        self.manifest["version"] = max(int(self.manifest.get("version") or 0), FORMAT_VERSION)
+        self.manifest["version"] = max(int(self.manifest.get("version") or 0), FORMAT_VERSION, needed_version(self.layers))
         if not self.manifest.get("activeLayerID") and self.added:
             self.manifest["activeLayerID"] = self.added[-1]["id"]
         validate_manifest(self.manifest, self.images, staged=self._staged)
@@ -2870,6 +2999,45 @@ def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def needed_version(layers):
+    """The lowest format version that holds these layers' adjustments (KIND_VERSIONS, FILTER_BLOCK_VERSIONS); 1
+    when nothing asks for more."""
+    needed = 1
+    for record in layers:
+        settings = record.get("adjustment")
+        if isinstance(settings, dict):
+            needed = max(needed, KIND_VERSIONS.get(settings.get("kind"), 7))
+            blocks = settings.get("filterLayerSettings")
+            if isinstance(blocks, dict):
+                needed = max(needed, 16, *(v for key, v in FILTER_BLOCK_VERSIONS.items() if blocks.get(key) is not None))
+    return needed
+
+
+def filter_layer_problems(blocks):
+    """What Compositor would refuse in a filterLayerSettings object: it decodes every shared field (none may be left
+    out) and requires each value to equal its clamped self (FilterLayerSettings.isValid)."""
+    if not isinstance(blocks, dict):
+        return ["filterLayerSettings must be an object"]
+    problems = []
+    for key, default in FILTER_SHARED.items():
+        value = blocks.get(key)
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                problems.append(f"filterLayerSettings.{key} must be true or false (every shared field is required)")
+        elif not is_number(value) or not FILTER_SHARED_RANGES[key][0] <= value <= FILTER_SHARED_RANGES[key][1]:
+            problems.append(f"filterLayerSettings.{key} must be a number from {FILTER_SHARED_RANGES[key][0]} to "
+                            f"{FILTER_SHARED_RANGES[key][1]} (every shared field is required)")
+    for name, ranges in (("tonal", TONAL_RANGES), ("sharpen", SHARPEN_RANGES)):
+        block = blocks.get(name)
+        if block is None:
+            continue
+        if not isinstance(block, dict) or not all(is_number(block.get(key)) and low <= block[key] <= high
+                                                  for key, (low, high) in ranges.items()):
+            problems.append(f"filterLayerSettings.{name} needs " + ", ".join(
+                f"{key} {low}-{high}" for key, (low, high) in ranges.items()))
+    return problems
+
+
 def adjustment_problems(settings):
     problems = []
     if settings.get("kind") not in ADJUSTMENT_KINDS:
@@ -2909,6 +3077,8 @@ def adjustment_problems(settings):
         if not all(key in hsv for key in ("range", "colorize", "invertRange", "adjustments", "bands")) \
                 or len(hsv.get("adjustments") or []) % 2 or len(hsv.get("bands") or []) % 2:
             problems.append("hsvSettings incomplete (adjustments and bands are flat [name, value, ...] arrays)")
+    if settings.get("filterLayerSettings") is not None:
+        problems.extend(filter_layer_problems(settings["filterLayerSettings"]))
     return problems
 
 
@@ -3391,19 +3561,48 @@ def module_delicious_skin(project, args):
     project.stack_skin_layer(record, rgb, alpha, "Normal")
 
 
+# The live sculpt: Compositor's Tonal Contrast at this amount with its default tone weights, through the half-strength
+# sculpt mask, lifts and deepens the face's planes as much as the Soft Light pixel layer did (planes' luminance change
+# 0.90-1.02 of it, correlation 0.95-0.99 on three test portraits, tests/bench.py sculpt). Being a high-pass from
+# `radius` rather than a band-pass, it also raises the fine texture under the mask: by about 7% of the texture
+# already there (the pixel layer: about 4%).
+SCULPT_AMOUNT = 40
+EYE_SHARPEN = 180  # percent, as the pixel layer's unsharp mask
+
+
+def pixel_fallback(project, kind, what):
+    version = int(project.manifest.get("version") or 0)
+    say(f"[OK] {what} is a pixel layer: the project is format version {version} and {kind} adjustment layers need "
+        f"{KIND_VERSIONS[kind]}. Saving it once in Compositor (which writes version {NEWEST_VERSION}) lets the next "
+        f"run make a live one")
+
+
+def sculpt_radius(project):
+    """The sculpt's coarse scale: a twelfth of the largest face's width (planes of the face, not features), by the
+    resolution without a face."""
+    faces = project.faces()
+    return max(4.0, (max(face[2] for face in faces) / 12.0) if faces else min(project.width, project.height) / 60.0)
+
+
 def module_sculpt(project, args):
     if existing(project, "🗿"):
         say("[SKIP] --sculpt: the project has its sculpt layer; brush on its mask")
         return
+    mask, how = project.painted("sculpt", sculpt_mask)
+    coarse = sculpt_radius(project)
+    if project.allows("Tonal Contrast"):
+        # Live: follows whatever the user does under it, needs no --refresh, has no pixels for Compositor to decode.
+        settings = tonal_contrast(amount=SCULPT_AMOUNT, radius=min(100.0, round(coarse, 1)))
+        project.put("light", [project.adjustment_layer(f"🗿 [DR5] 3D 骨相立体感 (Tonal Contrast · 实时 · {how})",
+                                                        settings, mask=mask)])
+        return
+    pixel_fallback(project, "Tonal Contrast", "the sculpt")
     rgb = to8(project.work())
-    faces = project.faces()
-    coarse = max(4.0, (max(face[2] for face in faces) / 12.0) if faces else min(project.width, project.height) / 60.0)
     fine = fs_radius(project.width, project.height)
     luma8 = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     # Band-pass: the planes of the face (cheekbones, brow, jaw), not pores or noise.
     band = cv2.GaussianBlur(luma8, (0, 0), fine) - gaussian(luma8, coarse)
     gray = np.clip(np.rint(128.0 + 2.0 * band), 0, 255).astype(np.uint8)
-    mask, how = project.painted("sculpt", sculpt_mask)
     project.put("light", [project.pixel_layer(f"🗿 [DR5] 3D 骨相立体感 (中频反差 · 柔光 · {how})", Image.fromarray(gray),
                                               blend="Soft Light", opacity=0.6, mask=mask)])
 
@@ -3431,22 +3630,37 @@ def module_dual_curves(project, args):
     project.put("light", records)
 
 
+def eye_radius(project):
+    """The unsharp mask's radius for the eyes, by the resolution."""
+    return max(2.0, round(min(project.width, project.height) / 1500.0, 1))
+
+
 def eye_pixels(project, work):
-    """The eye-brilliance layer's pixels made from `work` (0-1): sharpened, with more contrast."""
+    """The eye-brilliance pixel layer made from `work` (0-1): sharpened, with more contrast."""
     photo = Image.fromarray(to8(work))
-    radius = max(2.0, round(min(project.width, project.height) / 1500.0, 1))
-    enhanced = photo.filter(ImageFilter.UnsharpMask(radius=radius, percent=180, threshold=2))
+    enhanced = photo.filter(ImageFilter.UnsharpMask(radius=eye_radius(project), percent=EYE_SHARPEN, threshold=2))
     return ImageOps.autocontrast(enhanced, cutoff=1, preserve_tone=True)  # one stretch for all channels: no color cast
 
 
 def module_eyes(project, args):
-    """The eye-brilliance layer; a project that has one gets it made again in place (mask, opacity, name kept)."""
+    """The eye-brilliance layer: live (a Sharpen adjustment through the iris mask) when the format allows, else a
+    pixel snapshot. A project with the live one keeps it; one with the pixel layer gets that made again in place
+    (mask, opacity, name kept)."""
     same = [r for r in project.layers if refreshed_kind(r) == "👁️" and whole_canvas(project, r)]
     if same:
         record = same[-1]
         remade(project, record, eye_pixels(project, project.composite_before(record)), "重做 · 保留蒙版")
         return
+    if any((r.get("adjustment") or {}).get("kind") == "Sharpen" for r in existing(project, "👁️")):
+        say("[SKIP] --eyes: the project has its live eye-brilliance layer; set its opacity or brush on its mask")
+        return
     mask, how = project.painted("eyes", iris_mask)
+    if project.allows("Sharpen"):
+        settings = sharpen(amount=EYE_SHARPEN, radius=min(20.0, eye_radius(project)))
+        project.put("features", [project.adjustment_layer(f"👁️ [DR5] 眼神光 · 虹膜锐化 (Sharpen · 实时 · {how})",
+                                                           settings, opacity=0.7, mask=mask)])
+        return
+    pixel_fallback(project, "Sharpen", "the eye brilliance")
     project.put("features", [project.pixel_layer(f"👁️ [DR5] 眼神光 · 虹膜锐化 ({how})", eye_pixels(project, project.work()),
                                                  opacity=0.7, mask=mask)])
 
@@ -3815,8 +4029,9 @@ def parse_args(argv):
     parser.add_argument("--init", metavar="PHOTO", help="create the project from this photo (JPEG, PNG or TIFF)")
     parser.add_argument("--force", action="store_true", help="with --init, replace an existing project and its layers")
     parser.add_argument("--8bit", dest="eight_bit", action="store_true",
-                        help="with --init, make a 16-bit photo an 8-bit layer: for Compositor before 1.5, which can't "
-                             "open 16-bit layers (format 12)")
+                        help="with --init, only what Compositor before 1.5 reads: a 16-bit photo becomes an 8-bit "
+                             "layer (format 11), and the sculpt and eye brilliance are pixel layers rather than the "
+                             "live adjustment layers of format 18 and 19")
     parser.add_argument("--preset", choices=sorted(PRESETS),
                         help="daily (smoothing, neutral gray, observation folders; new or existing project), or a whole "
                              "layout for a new project (needs --init): dr5 (frequency separation, smoothing, sculpt, "
@@ -3845,10 +4060,14 @@ def parse_args(argv):
     parser.add_argument("--delicious-skin", nargs="?", const="auto", choices=["auto", "manual"],
                         help="DR5-style texture-keeping skin smoothing (spots healed first): on the skin mask, or "
                              "`manual` with a black mask to brush it on where wanted (as DR5's manual smoothing)")
-    parser.add_argument("--sculpt", action="store_true", help="3D sculpt: mid-frequency contrast, black mask")
+    parser.add_argument("--sculpt", action="store_true",
+                        help="3D sculpt: a live Tonal Contrast layer through a mask painted on the face's planes "
+                             "(format 18+; a mid-frequency contrast pixel layer in a project before that)")
     parser.add_argument("--neutral-gray", action="store_true", help="50%% gray Soft Light layer for dodge & burn")
     parser.add_argument("--dual-curves", action="store_true", help="brighten/darken Curves adjustments, black masks")
-    parser.add_argument("--eyes", action="store_true", help="eye brilliance: sharpened copy, black mask")
+    parser.add_argument("--eyes", action="store_true",
+                        help="eye brilliance: a live Sharpen layer through a mask painted on the irises (format 19+; "
+                             "a sharpened pixel copy in a project before that)")
     parser.add_argument("--look", choices=sorted(LOOKS),
                         help="color grade, as a folder of live adjustment layers: airy (日系清透), film (胶片暖调), "
                              "cool-fair (冷白皮), creamy (奶油肌), hk (港风), bw (黑白); --strength sets the folder's opacity")

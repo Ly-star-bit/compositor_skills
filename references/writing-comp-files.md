@@ -1,4 +1,4 @@
-# Compositor `.comp` 格式速查（写 format version 11，读到 20）
+# Compositor `.comp` 格式速查（写 format version 11 到 19，读到 20）
 
 依据 [robbietilton/Compositor](https://github.com/robbietilton/Compositor) 的 `docs/writing-comp-files.md`、`docs/project-format.md` 和 `Compositor/IO/ProjectStore.swift`（MIT，commit `22c7b8d5`，2026-10-08；版本 14–20 的规则和重载机制按 2026-10-26 的 `6d49a239`，见文末）；图层效果一节依据 `Compositor/Document/LayerEffects.swift` 和 `Compositor/IO/ImageExporter.swift`（commit `b4bfdea8`，2026-10-09）；16 位和 HDR 图层（版本 12、13）依据 commit `e8c9e29`（2026-10-12，Compositor 1.5.1）。下面的 JSON 形状由 Compositor 自己的 Swift `Codable` 类型编码得到。
 
@@ -103,7 +103,23 @@ Compositor 1.5 起保存的工程是版本 13（新建工程默认 12 以上）�
 }
 ```
 
-- `kind` 可取：`Hue/Saturation`、`Levels`、`Curves`、`Exposure`、`Gradient Map`、`Grain`、`Invert`、`Black & White`、`Color Balance`、`Gaussian Blur`、`Motion Blur`、`Add Noise`（这三种要版本 9 起）；版本 16 起还有 `Progressive Blur`、`Bloom / Glow`、`RGB Split`，18 起 `Vignette`、`Lens Effects`、`Tonal Contrast`，19 起 `Sharpen`，它们的参数在 `filterLayerSettings` 对象里（`vignette`、`tonal`、`lens` 块要 18 起，`sharpen` 块 19 起）。本 skill 不写这些，只在校验时放行。
+- `kind` 可取：`Hue/Saturation`、`Levels`、`Curves`、`Exposure`、`Gradient Map`、`Grain`、`Invert`、`Black & White`、`Color Balance`、`Gaussian Blur`、`Motion Blur`、`Add Noise`（这三种要版本 9 起）；版本 16 起还有 `Progressive Blur`、`Bloom / Glow`、`RGB Split`，18 起 `Vignette`、`Lens Effects`、`Tonal Contrast`，19 起 `Sharpen`，它们的参数在 `filterLayerSettings` 对象里（`vignette`、`tonal`、`lens` 块要 18 起，`sharpen` 块 19 起）。本 skill 写其中的 `Tonal Contrast`（骨相）和 `Sharpen`（眼神光），其余只在校验时放行。
+- `filterLayerSettings` 由 Swift 自动合成的 Codable 解码：下面 11 个共用字段**一个都不能少**（这里是 Compositor 的默认值），每个值都要在范围内（`progressiveFrom`/`progressiveTo` 0–250，`bloomAmount` 0–100，`bloomRadius` 1–150，`rgbSplitDistance` 0–200，`rgbSplitBlur` 0–400，`rgbSplitAngle` −180–180，`rgbSplitReach` 1–100000），否则整个工程被拒；`progressiveStart`、`progressiveEnd`、`rgbSplitCenter` 可以不写。`tonal` 块：`amount` 0–100（50 是 Compositor 的单位强度）、`radius` 1–100、`shadows`/`midtones`/`highlights` −100–100；`sharpen` 块：`amount` 0–300、`radius` 0.1–20。
+
+```json
+"adjustment": {
+  "kind": "Tonal Contrast", "hue": 0, "saturation": 0, "lightness": 0, "colorize": false,
+  "levels": { ...同上... }, "curves": { ...同上... },
+  "filterLayerSettings": {
+    "progressiveFrom": 0, "progressiveTo": 20, "progressiveRadial": false, "progressiveInverted": false,
+    "bloomAmount": 40, "bloomRadius": 24,
+    "rgbSplitDistance": 10, "rgbSplitBlur": 0, "rgbSplitAngle": 0, "rgbSplitRadial": false, "rgbSplitReach": 1000,
+    "tonal": { "amount": 40, "radius": 39.9, "shadows": 40, "midtones": 60, "highlights": 30 }
+  }
+}
+```
+
+眼神光同样，`kind` 是 `Sharpen`，块是 `"sharpen": { "amount": 180, "radius": 2 }`。算法（Filters.swift、AdjustPixels.c）：Tonal Contrast 取 Rec. 709 亮度减去半径 `radius` 的高斯模糊（不夹边，边缘处按透明度归一），差值经 tanh 压缩，按模糊后的影调用 shadows/midtones/highlights 加权，再乘 `amount/50` 和 4L(1−L)，加回三个通道；Sharpen 是 Core Image 的 USM：原图加 (原图 − 半径 `radius` 的高斯模糊) × `amount`%，边缘向外延伸。Core Image 的高斯核按像素面积积分，模糊结果比精确值低零点几级；脚本的渲染按同样的算法算，离边缘 3 个半径以外和 Compositor 最多差 2 级。
 - `ranges` 和 `channels` 的顺序都是 RGB、红、绿、蓝。曲线有 2–32 个点，x 从 0 到 255 严格递增，取值 0–255；点之间用保形三次插值，不会过冲。
 - 在上面的基础结构里再加对应字段：
 
@@ -178,4 +194,4 @@ Compositor 给打开的工程算一个指纹：`manifest.json` 的字节，加�
 
 ## 版本 14–20（Compositor 1.5.x，2026-10）
 
-都是增量，本 skill 写的图层形状不变：14 形状层圆角平滑、15 线条样式、16 `Progressive Blur`/`Bloom / Glow`/`RGB Split` 调整层和 `filterLayerSettings`、17 GIF 层（`gif` 对象）、18 `Vignette`/`Lens Effects`/`Tonal Contrast`、19 `Sharpen`、20 `lens.prismFringe`。读取版本 20 的工程时保持它的版本号；新加的层按版本 9 以来通用的形状写。
+都是增量，本 skill 写的图层形状不变：14 形状层圆角平滑、15 线条样式、16 `Progressive Blur`/`Bloom / Glow`/`RGB Split` 调整层和 `filterLayerSettings`、17 GIF 层（`gif` 对象）、18 `Vignette`/`Lens Effects`/`Tonal Contrast`、19 `Sharpen`、20 `lens.prismFringe`。读取已有工程时保持它的版本号：版本 18/19 起骨相、眼神光写成 Tonal Contrast / Sharpen 调整层，否则写像素层。新建工程的版本跟着内容走：含骨相 18、含眼神光 19，否则 11（16 位照片 12）；`--8bit` 固定 11。Compositor 每次保存都写最新的 20。

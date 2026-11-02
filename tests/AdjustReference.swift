@@ -2,7 +2,8 @@
 // tests can check retouch_builder.py's ports. usage: AdjustReference <adjustment.json> <w> <h> <in.rgba> <out.rgba>
 // Everything above the tool's MARK is copied from github.com/robbietilton/Compositor at b4bfdea: Curves.swift,
 // Levels.swift, ImageAdjustments.swift and HueSaturation.swift (the parts that turn settings into tables), with
-// the image plumbing and caching left out; the pixel kernels are in AdjustReference.c.
+// the image plumbing and caching left out; the pixel kernels are in AdjustReference.c (Tonal Contrast's from
+// AdjustPixels.c at 6d49a239). Tonal Contrast and Sharpen also run their Core Image steps, as Filters.swift does.
 //
 // MIT License
 //
@@ -25,6 +26,7 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
+import CoreImage
 import Foundation
 
 struct CurvePoint: Codable, Equatable {
@@ -465,7 +467,43 @@ struct Adjustment: Decodable {
     var blackWhiteSettings: BlackWhiteSettings? = nil
     var colorBalanceSettings: ColorBalanceSettings? = nil
     var grainSettings: GrainSettings? = nil
+    var filterLayerSettings: FilterLayerSettings? = nil
+    var blurRadius: Double? = nil
+    var preserveTransparency: Bool? = nil
 }
+
+// The Core Image steps of the filter adjustment layers (Filters.swift `run`, PixelAdjust.render): no color
+// management, 8-bit premultiplied sRGB in and out, as Compositor renders them. Nothing is shown: a CIContext in a
+// command-line tool draws to memory.
+struct TonalLayerSettings: Decodable { var amount: Double; var radius: Double; var shadows: Double; var midtones: Double; var highlights: Double }
+struct SharpenLayerSettings: Decodable { var amount: Double; var radius: Double }
+struct FilterLayerSettings: Decodable { var tonal: TonalLayerSettings?; var sharpen: SharpenLayerSettings? }
+
+let ciContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+
+func cgImage(_ rgba: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> CGImage {
+    let data = Data(bytes: rgba, count: width * height * 4)
+    return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4, space: sRGB,
+                   bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo), provider: CGDataProvider(data: data as CFData)!,
+                   decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+}
+
+/// `image` rendered to RGBA8 premultiplied bytes, top-down rows (PixelAdjust.render, then BrushRaster.draw).
+func rendered(_ image: CIImage, width: Int, height: Int) -> [UInt8] {
+    let extent = CGRect(x: 0, y: 0, width: width, height: height)
+    let drawn = ciContext.createCGImage(image, from: extent, format: .RGBA8, colorSpace: sRGB)!
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    bytes.withUnsafeMutableBytes { raw in
+        let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                space: sRGB, bitmapInfo: bitmapInfo)!
+        context.interpolationQuality = .none
+        context.draw(drawn, in: extent)
+    }
+    return bytes
+}
+
 
 let arguments = CommandLine.arguments
 guard arguments.count == 6, let width = Int(arguments[2]), let height = Int(arguments[3]) else {
@@ -531,6 +569,31 @@ pixels.withUnsafeMutableBufferPointer { buffer in
     case "Grain":
         let s = adjustment.grainSettings!
         adjust_grain(p, width, height, stride, s.amount, s.size, s.roughness, s.seed, 0, 0, 1)
+    case "Tonal Contrast":
+        let s = adjustment.filterLayerSettings?.tonal ?? TonalLayerSettings(amount: 50, radius: 16, shadows: 40, midtones: 60, highlights: 30)
+        // Not clamped: beyond the layer the blur sees transparency, so near the edges the base thins out.
+        let blurred = CIImage(cgImage: cgImage(p, width: width, height: height)).applyingGaussianBlur(sigma: s.radius)
+        var base = rendered(blurred.cropped(to: CGRect(x: 0, y: 0, width: width, height: height)), width: width, height: height)
+        base.withUnsafeMutableBufferPointer { b in
+            adjust_tonal_contrast(p, b.baseAddress!, width, height, stride, stride, s.amount, s.shadows, s.midtones, s.highlights)
+        }
+    case "Gaussian Blur":
+        // The adjustment layer's blur (LayerAdjustment.apply -> PixelFilter.run .gaussianBlur): the edges carried on
+        // past every side, as for Sharpen; with `preserveTransparency` the layer is blurred unclamped instead.
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        let source = CIImage(cgImage: cgImage(p, width: width, height: height))
+        let blurred = (adjustment.preserveTransparency == true ? source : source.clampedToExtent())
+            .applyingGaussianBlur(sigma: adjustment.blurRadius ?? 10)
+        let out = rendered(blurred.cropped(to: extent), width: width, height: height)
+        out.withUnsafeBufferPointer { memcpy(p, $0.baseAddress!, count * 4) }
+    case "Sharpen":
+        let s = adjustment.filterLayerSettings?.sharpen ?? SharpenLayerSettings(amount: 100, radius: 1)
+        // Edge pixels carry on past every side (FilterEdit.extending with all the canvas's sides).
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        let sharpened = CIImage(cgImage: cgImage(p, width: width, height: height)).clampedToExtent()
+            .applyingFilter("CIUnsharpMask", parameters: [kCIInputRadiusKey: s.radius, kCIInputIntensityKey: s.amount / 100])
+        let out = rendered(sharpened.cropped(to: extent), width: width, height: height)
+        out.withUnsafeBufferPointer { memcpy(p, $0.baseAddress!, count * 4) }
     default:
         FileHandle.standardError.write("not covered: \(adjustment.kind)\n".data(using: .utf8)!)
         exit(3)

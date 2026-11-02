@@ -248,3 +248,61 @@ void cube_apply(uint8_t *pixels, size_t count, const float *cube, int dimension)
         }
     }
 }
+
+
+// ---- Tonal Contrast (Compositor/Rendering/AdjustPixels.c at 6d49a239): the layer's brightness against a Gaussian
+// blur of it (`blurred`, made in Core Image by the tool), the difference added back weighted by the blurred tone.
+
+static double camera_clamp(double value) {
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+}
+
+static double rec709(double r, double g, double b) {
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+static void write_premultiplied(uint8_t *p, double r, double g, double b, double alpha) {
+    p[0] = (uint8_t)fmin(alpha, fmax(0.0, round(r * alpha)));
+    p[1] = (uint8_t)fmin(alpha, fmax(0.0, round(g * alpha)));
+    p[2] = (uint8_t)fmin(alpha, fmax(0.0, round(b * alpha)));
+}
+
+static double tonal_smooth(double low, double high, double value) {
+    double t = camera_clamp((value - low) / (high - low));
+    return t * t * (3.0 - 2.0 * t);
+}
+
+void adjust_tonal_contrast(uint8_t *rgba, const uint8_t *blurred, size_t width, size_t height,
+                           size_t stride, size_t blurredStride, double amount,
+                           double shadows, double midtones, double highlights) {
+    if (amount <= 0 || (shadows == 0 && midtones == 0 && highlights == 0)) return;
+    double strength = amount / 50.0;
+    for (size_t y = 0; y < height; ++y) {
+        uint8_t *row = rgba + y * stride;
+        const uint8_t *baseRow = blurred + y * blurredStride;
+        for (size_t x = 0; x < width; ++x) {
+            uint8_t *p = row + x * 4;
+            const uint8_t *base = baseRow + x * 4;
+            double alpha = p[3];
+            if (alpha == 0 || base[3] == 0) continue;
+            double r = fmin(1.0, p[0] / alpha);
+            double g = fmin(1.0, p[1] / alpha);
+            double b = fmin(1.0, p[2] / alpha);
+            double lum = rec709(r, g, b);
+            double baseLum = rec709(fmin(1.0, base[0] / (double)base[3]),
+                                    fmin(1.0, base[1] / (double)base[3]),
+                                    fmin(1.0, base[2] / (double)base[3]));
+            double shadowWeight = 1.0 - tonal_smooth(0.15, 0.5, baseLum);
+            double highlightWeight = tonal_smooth(0.5, 0.85, baseLum);
+            double midtoneWeight = 1.0 - shadowWeight - highlightWeight;
+            double weight = (shadows * shadowWeight + midtones * midtoneWeight +
+                             highlights * highlightWeight) / 100.0;
+            double detail = lum - baseLum;
+            double delta = 0.18 * tanh(detail * 6.0) * weight * strength * (4.0 * lum * (1.0 - lum));
+            write_premultiplied(p, camera_clamp(r + delta), camera_clamp(g + delta),
+                                camera_clamp(b + delta), alpha);
+        }
+    }
+}

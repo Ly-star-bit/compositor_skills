@@ -289,14 +289,42 @@ enum AdjustmentKind: String, Codable, CaseIterable {
     case sharpen = "Sharpen"
 }
 
-/// The Filter menu's layer settings (versions 16-20): only which blocks are present is mirrored here, for the
-/// version gates; their ranges are not checked.
+/// The Filter menu's layer settings (LayerAdjustment.swift at 6d49a239, versions 16-20). Synthesized Codable, as
+/// Compositor's, so every shared field must be present. Tonal Contrast and Sharpen, which this skill writes, are
+/// mirrored with their ranges (FilterSettings.normalized: a value must equal its clamped self); Vignette and Lens
+/// Effects only by presence, for the version gates.
 struct FilterLayerSettings: Codable, Equatable {
     struct Block: Codable, Equatable {}
+    struct Tonal: Codable, Equatable {
+        var amount: Double, radius: Double, shadows: Double, midtones: Double, highlights: Double
+        var isValid: Bool {
+            (0...100).contains(amount) && (1...100).contains(radius) && (-100...100).contains(shadows)
+                && (-100...100).contains(midtones) && (-100...100).contains(highlights)
+        }
+    }
+    struct Sharpen: Codable, Equatable {
+        var amount: Double, radius: Double
+        var isValid: Bool { (0...300).contains(amount) && (0.1...20).contains(radius) }
+    }
+    var progressiveFrom: Double, progressiveTo: Double
+    var progressiveStart: CGPoint?, progressiveEnd: CGPoint?
+    var progressiveRadial: Bool, progressiveInverted: Bool
+    var bloomAmount: Double, bloomRadius: Double
+    var rgbSplitDistance: Double, rgbSplitBlur: Double, rgbSplitAngle: Double
+    var rgbSplitRadial: Bool
+    var rgbSplitCenter: CGPoint?
+    var rgbSplitReach: Double
     var vignette: Block?
-    var tonal: Block?
+    var tonal: Tonal?
     var lens: Block?
-    var sharpen: Block?
+    var sharpen: Sharpen?
+    var isValid: Bool {
+        (0...250).contains(progressiveFrom) && (0...250).contains(progressiveTo) && (0...100).contains(bloomAmount)
+            && (1...150).contains(bloomRadius) && (0...200).contains(rgbSplitDistance) && (0...400).contains(rgbSplitBlur)
+            && (-180...180).contains(rgbSplitAngle) && (1...100_000).contains(rgbSplitReach)
+            && [progressiveStart, progressiveEnd, rgbSplitCenter].compactMap { $0 }.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+            && (tonal?.isValid ?? true) && (sharpen?.isValid ?? true)
+    }
 }
 
 struct LayerAdjustment: Codable, Equatable {
@@ -346,6 +374,7 @@ struct LayerAdjustment: Codable, Equatable {
         && resolvedMotionAngle.isFinite && (-90...90).contains(resolvedMotionAngle)
         && resolvedMotionDistance.isFinite && (1...2000).contains(resolvedMotionDistance)
         && resolvedNoiseAmount.isFinite && (0.1...400).contains(resolvedNoiseAmount)
+        && (filterLayerSettings?.isValid ?? true)
     }
 }
 

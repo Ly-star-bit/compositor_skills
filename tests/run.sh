@@ -128,6 +128,7 @@ validate() { "$VALIDATE" "$@" | cut -c1-150; }
 suite_format() {  # writing, refusing and rolling back
     build --init "$SMALL" --comp q.comp --neutral-gray --inspection > /dev/null 2>&1; want 0 $? "neutral gray and the observation folders"
     build --comp q.comp --freq-sep --delicious-skin --eyes --inspection > add.log 2>&1; want 0 $? "modules added to it"
+    has "...the eyes a pixel layer in a format-11 project, saying why" grep -m1 "eye brilliance is a pixel layer: the project is format version 11" add.log
     has "a second observation folder is skipped" grep -m1 SKIP add.log
     build --comp q.comp --freq-sep > again.log 2>&1; want 0 $? "frequency separation again"
     has "...and skipped" grep -m1 SKIP again.log
@@ -240,6 +241,14 @@ suite_skin_stack() {  # the layers stack in order, on new and existing projects
     inside a.comp "skin folder: the smoothing" 🧴 🔥
     inside a.comp "light folder: dual curves over neutral gray over sculpt" 🌓 ☀️ 🌑 🩶 🗿
     inside a.comp "eye brilliance in the features folder" 😊 👁️
+    has "the sculpt is a live Tonal Contrast layer through its mask" grep -m1 "🗿.*adjustment:Tonal Contrast, Normal, 100%, mask" a.log
+    has "the eye brilliance is a live Sharpen layer at 70% through its mask" grep -m1 "👁️.*adjustment:Sharpen, Normal, 70%, mask" a.log
+    "$PY" -c "import json; v = json.load(open('a.comp/manifest.json'))['version']; print('  ok: a new project with them is format 19' if v == 19 else f'  BAD: version {v}')"
+    build --init "$SMALL" --comp compat.comp --8bit --sculpt --eyes --no-checks > compat.log 2>&1; want 0 $? "--8bit: only what Compositor before 1.5 reads"
+    has "...the sculpt a Soft Light pixel layer" grep -m1 "🗿.*\[pixels, Soft Light, 60%, mask" compat.log
+    has "...the eyes a pixel layer" grep -m1 "👁️.*\[pixels, Normal, 70%, mask" compat.log
+    has "...saying why" grep -m1 "is a pixel layer: the project is format version 11" compat.log
+    "$PY" -c "import json; v = json.load(open('compat.comp/manifest.json'))['version']; print('  ok: ...format 11' if v == 11 else f'  BAD: version {v}')"
     has "the smoothing says how it is masked" grep -m1 "保边磨皮 · 保形.*面部锁定" a.log
     echo "  spots the smoothing healed first: $(grep -oE '祛痘 [0-9]+ 处' a.log | head -1)"
     [ -f a.checks/features.jpg ] && echo "  ok: features.jpg (sculpt and eyes painted in)" || echo "  BAD: no features.jpg"
@@ -585,8 +594,8 @@ EOF
 }
 
 suite_refresh() {  # --refresh: the snapshot layers recomputed in place, after manual work under them
-    build --init "$PHOTO" --comp r.comp --freq-sep --delicious-skin --sculpt --eyes --dual-curves --no-checks > /dev/null 2>&1
-    want 0 $? "a project with the layers --refresh recomputes, and ones it leaves alone"
+    build --init "$PHOTO" --comp r.comp --8bit --freq-sep --delicious-skin --sculpt --eyes --dual-curves --no-checks > /dev/null 2>&1
+    want 0 $? "a format-11 project with the layers --refresh recomputes (the pixel eyes), and ones it leaves alone"
     cp -R r.comp r0.comp
     build --comp r.comp --render r0.png > /dev/null 2>&1
     build --comp r.comp --refresh --render r1.png > r1.log 2>&1; want 0 $? "--refresh with nothing changed under them"
@@ -608,6 +617,11 @@ print(f"  {'ok' if ok else 'BAD'}: the picture stays (mean change {d.mean():.3f}
 left = [n for n in os.listdir("r.comp") if n.endswith((".new", ".old")) or n == ".retouch"]
 print("  ok: no files left over" if not left else f"  BAD: left over {left}")
 EOF
+    build --init "$PHOTO" --comp rl.comp --delicious-skin --eyes --no-checks > /dev/null 2>&1
+    cp -R rl.comp rl0.comp
+    build --comp rl.comp --refresh --no-checks > rl.log 2>&1; want 0 $? "--refresh on a project with the live eye brilliance"
+    [ "$(grep -c '(重算)' rl.log)" = 1 ] && echo "  ok: only the smoothing recomputed: the live Sharpen layer follows the picture by itself" || echo "  BAD: $(grep -c '(重算)' rl.log) recomputed"
+    "$PY" -c "import json; a, b = (json.load(open(f'{c}/manifest.json')) for c in ('rl0.comp', 'rl.comp')); print('  ok: its manifest is as it was' if a == b else '  BAD: the manifest changed')"
     cp -R r0.comp e.comp
     "$PY" - "$S" <<'EOF'
 # Manual work under the smoothing: the texture of a square of the high layer taken out, as a clone stamp would.
@@ -881,6 +895,14 @@ suite_validator() {  # the validator itself still rejects what Compositor reject
     "$VALIDATE" vt.comp > /dev/null; want 1 $? "an object transform fails"
     cp -R v.comp vm.comp && "$PY" -c "import json;p='vm.comp/manifest.json';m=json.load(open(p));l=next(x for x in m['layers'] if x.get('maskFile'));l.pop('maskFile');json.dump(m,open(p,'w'))"
     "$VALIDATE" vm.comp > /dev/null; want 1 $? "maskEnabled without maskFile fails"
+    build --init "$SMALL" --comp vl.comp --sculpt --eyes --no-checks > /dev/null 2>&1
+    "$VALIDATE" vl.comp > /dev/null; want 0 $? "a project with live Tonal Contrast and Sharpen layers passes"
+    cp -R vl.comp vr.comp && "$PY" -c "import json;p='vr.comp/manifest.json';m=json.load(open(p));l=next(x for x in m['layers'] if (x.get('adjustment') or {}).get('kind')=='Tonal Contrast');l['adjustment']['filterLayerSettings']['tonal']['amount']=150;json.dump(m,open(p,'w'))"
+    "$VALIDATE" vr.comp > /dev/null; want 1 $? "a Tonal Contrast amount over 100 fails"
+    build --comp vr.comp --check > /dev/null 2>&1; want 1 $? "...and --check refuses it too"
+    cp -R vl.comp vs.comp && "$PY" -c "import json;p='vs.comp/manifest.json';m=json.load(open(p));l=next(x for x in m['layers'] if (x.get('adjustment') or {}).get('kind')=='Sharpen');l['adjustment']['filterLayerSettings'].pop('bloomAmount');json.dump(m,open(p,'w'))"
+    "$VALIDATE" vs.comp > /dev/null; want 1 $? "a shared filter field left out fails"
+    build --comp vs.comp --check > /dev/null 2>&1; want 1 $? "...and --check refuses it too"
 }
 
 suite_timing() {  # on request: a 24-megapixel photo through the dr5 preset with the neutral gray

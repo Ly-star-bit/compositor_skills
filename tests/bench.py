@@ -288,6 +288,11 @@ def adjustment_cases():
     yield "gradient map, reversed", rb.adjustment("Gradient Map", gradientMapSettings={
         "shadows": {"red": 0.1, "green": 0.15, "blue": 0.3}, "highlights": {"red": 1, "green": 0.9, "blue": 0.75}, "reversed": True})
     yield "grain", rb.adjustment("Grain", grainSettings={"amount": 60, "size": 0.7, "roughness": 80, "seed": 4000000000})
+    yield "tonal contrast, defaults", rb.tonal_contrast()
+    yield "tonal contrast, radius 60", rb.tonal_contrast(amount=70, radius=60, shadows=20, midtones=80, highlights=-10)
+    yield "tonal contrast, radius 100", rb.tonal_contrast(amount=50, radius=100, shadows=50, midtones=60, highlights=40)
+    yield "sharpen, defaults", rb.sharpen()
+    yield "sharpen, radius 2.7, 180%", rb.sharpen(amount=180, radius=2.7)
     for key, (label, layers) in rb.LOOKS.items():
         for name, settings, _ in layers:
             yield f"look {key}: {name}", settings
@@ -302,13 +307,21 @@ def bench_adjust(binary):
     colors = np.vstack([(sweep * 255).round().astype(np.uint8),
                         np.random.default_rng(7).integers(0, 256, (120, 360, 3), dtype=np.uint8)])
     photo = portrait("collins_orig.jpg")["rgb8"][900:1400, 700:1200]
-    worst, differing = 0, 0.0
+    # Tonal Contrast and Sharpen blur in Core Image, which works at reduced precision: its blur comes out a few tenths
+    # of a level low, more on noise, and within three radii of the edges, where Tonal Contrast's unclamped base is
+    # thin and 8-bit, the two drift apart more. They are held to a looser ceiling, away from the edges, on a smooth
+    # sweep and a larger crop of the photo big enough to have an inside at radius 100; the edge band is reported.
+    core_image = {"Tonal Contrast", "Sharpen"}
+    wide_sweep = np.tile((sweep * 255).round().astype(np.uint8), (15, 3, 1))
+    big_photo = portrait("collins_orig.jpg")["rgb8"][600:1700, 400:1500]
+    worst, differing, ci_worst, ci_over, ci_edge = 0, 0.0, 0, 0.0, 0
     with tempfile.TemporaryDirectory() as folder:
         for name, settings in adjustment_cases():
             with open(os.path.join(folder, "a.json"), "w") as f:
                 json.dump(settings, f)
             row = []
-            for image in (colors, photo):
+            blurs = settings["kind"] in core_image
+            for image in (wide_sweep, big_photo) if blurs else (colors, photo):
                 height, width = image.shape[:2]
                 np.dstack([image, np.full((height, width), 255, np.uint8)]).tofile(os.path.join(folder, "in.rgba"))
                 subprocess.run([binary, os.path.join(folder, "a.json"), str(width), str(height), os.path.join(folder, "in.rgba"),
@@ -316,10 +329,19 @@ def bench_adjust(binary):
                 reference = np.fromfile(os.path.join(folder, "out.rgba"), np.uint8).reshape(height, width, 4)[..., :3]
                 ours = rb.to8(rb.adjusted(image.astype(np.float32) / 255.0, settings))
                 difference = np.abs(reference.astype(int) - ours.astype(int))
-                worst, differing = max(worst, int(difference.max())), max(differing, 100 * (difference.max(-1) > 0).mean())
-                row.append(f"max {int(difference.max())}, {100 * (difference.max(-1) > 0).mean():.3f}% differ")
+                if blurs:
+                    reach = rb.sampling_margin(settings)
+                    inside = difference[reach:-reach, reach:-reach]
+                    ci_worst, ci_over = max(ci_worst, int(inside.max())), max(ci_over, 100 * (inside.max(-1) > 1).mean())
+                    ci_edge = max(ci_edge, int(difference.max()))
+                    row.append(f"max {int(inside.max())}, {100 * (inside.max(-1) > 1).mean():.3f}% over 1 (edge band max {int(difference.max())})")
+                else:
+                    worst, differing = max(worst, int(difference.max())), max(differing, 100 * (difference.max(-1) > 0).mean())
+                    row.append(f"max {int(difference.max())}, {100 * (difference.max(-1) > 0).mean():.3f}% differ")
             print(f"  {name[:46]:46s} colors: {row[0]:22s} photo: {row[1]}")
     print(f"  WORST  {check('max difference (levels)', worst, ceiling=1)}  {check('pixels differing %', differing, ceiling=0.2)}")
+    print(f"  WORST  Core Image blurs, away from the edges: {check('max difference (levels)', ci_worst, ceiling=3)}  "
+          f"{check('pixels over 1 level %', ci_over, ceiling=0.5)}  (edge band max {ci_edge})")
 
 
 if __name__ == "__main__":

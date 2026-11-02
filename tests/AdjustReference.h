@@ -12,4 +12,7 @@ void adjust_color_balance(uint8_t *rgba, size_t width, size_t height, size_t str
                           const float *midtones, const float *highlights, int preserveLuminosity);
 void levels_apply(uint8_t *pixels, size_t count, const float *tables);
 void cube_apply(uint8_t *pixels, size_t count, const float *cube, int dimension);
+void adjust_tonal_contrast(uint8_t *rgba, const uint8_t *blurred, size_t width, size_t height,
+                           size_t stride, size_t blurredStride, double amount,
+                           double shadows, double midtones, double highlights);
 #endif

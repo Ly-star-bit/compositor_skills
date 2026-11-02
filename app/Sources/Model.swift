@@ -66,8 +66,8 @@ enum ModuleGroup: String, CaseIterable, Identifiable {
             Module(flag: "inspection", title: "观察组", symbol: "eye.trianglebadge.exclamationmark", note: "黑白看明暗、颜色看泛红偏色，默认关闭"),
         ]
         case .features: [
-            Module(flag: "sculpt", title: "3D 骨相", symbol: "cube", note: "中频反差柔光层，五官立体"),
-            Module(flag: "eyes", title: "眼神光", symbol: "eye", note: "虹膜锐化提亮"),
+            Module(flag: "sculpt", title: "3D 骨相", symbol: "cube", note: "Tonal Contrast 实时层，预涂五官的面"),
+            Module(flag: "eyes", title: "眼神光", symbol: "eye", note: "Sharpen 实时层，预涂虹膜"),
         ]
         }
     }
