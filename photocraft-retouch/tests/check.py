@@ -254,7 +254,11 @@ def suite_append(work, photo):
         ok(len(names) == count + 2 and sum(n.startswith("🔥") for n in names) == 1
            and sum(n.startswith("🧴") for n in names) == 1,
            f"…and adds only the smoothing in its folder ({count} → {len(names)} layers)")
+        ok(any(n.startswith(RB.MANUAL_PREFIX) for n in names), "…brushed on by hand, the default")
         pc.close()
+        out = skill(work, "--pcraft", target, "--freq-sep", "--blur-radius", "8", "--no-checks")
+        ok("[SKIP] --freq-sep" in out and "isn't made again" in out,
+           "another radius on the document's pair: skipped, saying PhotoCraft's pair isn't made again")
         out = skill(work, "--pcraft", target, "--delicious-skin", "--skin-strength", "0.6", "--no-checks")
         ok("重做 · 保留蒙版" in out, "running the smoothing again redoes it in place")
         pc.open(target)
@@ -269,7 +273,8 @@ def suite_append(work, photo):
 def suite_refresh(work, photo):
     print("== refresh: work on the high-frequency layer, save, recompute")
     target = os.path.join(work, "refresh.pcraft")
-    skill(work, "--init", photo, "--pcraft", target, "--preset", "dr5", "--no-checks")
+    # the automatic mask: a snapshot that covers the face, so it hides the edit until recomputed
+    skill(work, "--init", photo, "--pcraft", target, "--preset", "dr5", "--delicious-skin", "auto", "--no-checks")
     pc = Pc(work)
     try:
         pc.open(target)

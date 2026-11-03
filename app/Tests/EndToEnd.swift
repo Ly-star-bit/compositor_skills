@@ -123,6 +123,7 @@ enum EndToEnd {
                    "\(job.name) showed its steps as they happened")
         }
         expect(studio.jobs.first?.project?.lastPathComponent == "photo1 2.comp", "a taken name gets a number (\(studio.jobs.first?.project?.lastPathComponent ?? "-"))")
+        expect(studio.jobs.first?.log.contains("黑蒙版 · 画笔涂白处磨皮") == true, "手动刷出 by default: the smoothing layer starts with a black mask")
         if let failed = studio.jobs.first(where: { $0.name == "broken" }) {
             if case .failed(let reason) = failed.status {
                 print("   broken.jpg: \(reason)")
@@ -151,12 +152,15 @@ enum EndToEnd {
         again.jobs[0].status = .waiting
         again.settings.choose(.dr5)
         again.settings.set("sculpt", false)
-        again.settings.smoothingMask = .manual
+        again.settings.smoothingMask = .auto  // the batch brushed it on (the default): the other kind is a layer more
+        again.settings.freqSepAuto = false
+        again.settings.freqSepRadius = 8
         await again.start()
         expect(again.jobs[0].status == .done && layers(projects[0]) > before,
                "DR5 without 3D 骨相 goes on an existing project, module by module (\(before) → \(layers(projects[0])) layers)")
         expect(!again.jobs[0].log.contains("sculpt"), "the module switched off didn't run")
-        expect(again.jobs[0].log.contains("黑蒙版 · 画笔涂白处磨皮"), "手动刷出: the smoothing layer starts with a black mask")
+        expect(again.jobs[0].log.contains("面部锁定"), "自动蒙版: a smoothing layer masked to the skin found")
+        expect(again.jobs[0].log.contains("重做 · σ=8px"), "高低频 8px: the pair no one worked on is made again at that radius")
 
         // ---- 重算: the automatic layers recomputed in place from the project as it is, nothing added ----
         let refresher = Studio(environment: environment)

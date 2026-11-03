@@ -94,7 +94,7 @@ enum ModuleGroup: String, CaseIterable, Identifiable {
         switch self {
         case .skin: [
             Module(flag: "delicious-skin", title: "DR5 磨皮", symbol: "circle.hexagongrid", note: "先祛痘，再匀肤；保留毛孔和五官立体"),
-            Module(flag: "freq-sep", title: "高低频", symbol: "square.split.2x1", note: "按脸宽分开，留给手工修的两层"),
+            Module(flag: "freq-sep", title: "高低频", symbol: "square.split.2x1", note: "留给手工修的两层，半径在下面选"),
         ]
         case .light: [
             Module(flag: "neutral-gray", title: "中性灰", symbol: "circle.grid.2x2", note: "50% 灰柔光层，手工加深减淡"),
@@ -111,10 +111,10 @@ enum ModuleGroup: String, CaseIterable, Identifiable {
     }
 }
 
-/// How the DR5 smoothing layer is masked (the script's --delicious-skin auto|manual): on the skin it found, or
-/// black, to be brushed on by hand as in DR5's manual smoothing.
+/// How the DR5 smoothing layer is masked (the script's --delicious-skin manual|auto): black, to be brushed on by
+/// hand as in DR5's manual smoothing (the default, as in Photoshop), or on the skin it found.
 enum SmoothingMask: String, CaseIterable, Identifiable {
-    case auto, manual
+    case manual, auto
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -251,10 +251,12 @@ struct RetouchSettings: Equatable {
     var preset: Preset = .daily
     var modules: Set<String> = []    // switched on beyond the preset (grain included)
     var removed: Set<String> = []    // the preset's own, switched off
-    var smoothingMask: SmoothingMask = .auto
+    var smoothingMask: SmoothingMask = .manual
     var skinStrength: SkinStrength = .medium
     var strength: Double = 1.0
     var texture: SkinTexture = .natural
+    var freqSepAuto = true           // the frequency separation's radius: 1/200 of the face's width, or this one
+    var freqSepRadius = RetouchSettings.defaultFreqSepRadius
     var look: Look = .none
     var glow: GlowStyle = .none
     var glowColorMode: GlowColorMode = .natural
@@ -299,6 +301,10 @@ struct RetouchSettings: Equatable {
 
 extension RetouchSettings {  // an extension, so the struct keeps its memberwise init
     static let defaultsKey = "settings"
+    /// 2: the smoothing is brushed on by default. A 磨皮方式 saved before then was the old default, not a choice.
+    static let version = 2
+    static let freqSepRadii: ClosedRange<Double> = 1.5...40
+    static let defaultFreqSepRadius = 6.0
 
     /// The settings as a property list (strings, numbers, arrays), as UserDefaults keeps it.
     var asDictionary: [String: Any] {
@@ -307,7 +313,8 @@ extension RetouchSettings {  // an extension, so the struct keeps its memberwise
             "smoothingMask": smoothingMask.rawValue, "skinStrength": skinStrength.rawValue, "strength": strength,
             "texture": texture.rawValue, "look": look.rawValue, "glow": glow.rawValue,
             "glowColorMode": glowColorMode.rawValue, "glowColor": glowColor.hex, "glowOuterColor": glowOuterColor.hex,
-            "render": render, "checks": checks,
+            "render": render, "checks": checks, "version": Self.version,
+            "freqSepAuto": freqSepAuto, "freqSepRadius": freqSepRadius,
         ]
         if case .folder(let url) = output { dictionary["outputFolder"] = url.path }
         return dictionary
@@ -321,7 +328,10 @@ extension RetouchSettings {  // an extension, so the struct keeps its memberwise
         let known = Set(Arguments.moduleOrder)
         if let list = dictionary["modules"] as? [String] { modules = Set(list).intersection(known).subtracting(preset.includes) }
         if let list = dictionary["removed"] as? [String] { removed = Set(list).intersection(preset.includes) }
-        if let raw = dictionary["smoothingMask"] as? String, let value = SmoothingMask(rawValue: raw) { smoothingMask = value }
+        if (dictionary["version"] as? Int ?? 1) >= 2, let raw = dictionary["smoothingMask"] as? String,
+           let value = SmoothingMask(rawValue: raw) { smoothingMask = value }
+        if let value = dictionary["freqSepAuto"] as? Bool { freqSepAuto = value }
+        if let value = dictionary["freqSepRadius"] as? Double, Self.freqSepRadii.contains(value) { freqSepRadius = value }
         if let raw = dictionary["skinStrength"] as? String, let value = SkinStrength(rawValue: raw) { skinStrength = value }
         if let value = dictionary["strength"] as? Double, (0.1...2).contains(value) { strength = value }
         if let raw = dictionary["texture"] as? String, let value = SkinTexture(rawValue: raw) { texture = value }

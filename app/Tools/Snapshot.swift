@@ -162,7 +162,7 @@ enum Snapshot {
         shoot(Columns(studio: studio), size: size, dark: true, to: out.appendingPathComponent("4d-columns-dark.png"))
         // the whole inspector, every card, which the window shows only by scrolling
         studio.settings.texture = .soft
-        shoot(InspectorView(studio: studio), size: NSSize(width: 340, height: 2300),
+        shoot(InspectorView(studio: studio), size: NSSize(width: 340, height: 2550),
               to: out.appendingPathComponent("4e-inspector-full.png"))
         studio.settings.texture = .natural
 
@@ -184,15 +184,16 @@ enum Snapshot {
         tall.settings.preset = .dr5
         tall.settings.modules = ["neutral-gray"]
         tall.settings.set("grain", false)
-        tall.settings.smoothingMask = .manual
+        tall.settings.freqSepAuto = false  // the radius slider showing
+        tall.settings.freqSepRadius = 8
         tall.settings.look = .coolFair
         tall.settings.glow = .mist
         tall.settings.glowColorMode = .twoTone
         tall.settings.glowOuterColor = RGB.named[4].1
         tall.settings.strength = 0.8
-        shoot(InspectorView(studio: tall).frame(width: 340, height: 2000), size: NSSize(width: 340, height: 2000),
+        shoot(InspectorView(studio: tall).frame(width: 340, height: 2250), size: NSSize(width: 340, height: 2250),
               to: out.appendingPathComponent("7-inspector.png"))
-        shoot(InspectorView(studio: tall).frame(width: 340, height: 2000), size: NSSize(width: 340, height: 2000), dark: true,
+        shoot(InspectorView(studio: tall).frame(width: 340, height: 2250), size: NSSize(width: 340, height: 2250), dark: true,
               to: out.appendingPathComponent("7b-inspector-dark.png"))
 
         shoot(SettingsView(environment: environment(.ready)), size: NSSize(width: 520, height: 400),

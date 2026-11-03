@@ -15,12 +15,15 @@ curves, neutral gray, sculpt), features, the looks (a folder each), glow, then t
 folders. Folders in Compositor are pass-through, so they change nothing in the picture.
 
 Skin stack, right above the photo (in the frequency-separation and skin folders), in this order:
-  --freq-sep        low/high frequency pair; high = (B - L)/2 + 128, so in Linear Light it rebuilds the photo
+  --freq-sep        low/high frequency pair; high = (B - L)/2 + 128, so in Linear Light it rebuilds the photo;
+                    --blur-radius PX|auto sizes it, and on a pair no one has worked on yet makes it again at the new
+                    radius
   --delicious-skin  DR5-style edge-preserving smoothing of the coarse tones only, pores kept: the form engine (default)
                     first heals the spots it finds (acne, small dark or red marks, with skin texture from next to
                     them), then uses He's guided filter on the skin alone, keeps the shadows around eyes, nostrils and
-                    lips and fades round dark spots; `--delicious-skin manual` starts its mask black, to brush on as
-                    in DR5's manual smoothing
+                    lips and fades round dark spots. Its mask starts black, to brush on where wanted as in DR5's
+                    manual smoothing; `--delicious-skin auto` masks it to the skin found instead. A project that has
+                    one kind already keeps that kind unless one is named
 On top:
   --sculpt          3D sculpt: a live Tonal Contrast layer on the face's planes (format 18+; before that a
                     mid-frequency contrast pixel layer in Soft Light)
@@ -3406,31 +3409,124 @@ def module_refresh(project, args):
     project.skin_changed = True
 
 
-def module_freq_sep(project, args):
-    if project.frequency_pair():
-        say("[SKIP] A frequency-separation pair already sits above the photo")
-        return
-    if args.blur_radius and args.blur_radius > 0:
-        radius, sized = args.blur_radius, "手动"
-    elif project.faces():
-        radius, sized = max(1.5, round(project.face_width() / FS_FACE, 1)), "按脸宽"
-    else:
-        radius, sized = fs_radius(project.width, project.height), "按分辨率"
-    folder = project.folder(FOLDER_NAMES["freq_sep"])
-    names = (f"{FS_LOW} · 肤色与光影 (Low σ={radius:g}px · {sized})", f"{FS_HIGH} · 纹理与毛孔 (High · Linear Light)")
+FS_SIGMA = re.compile(r"σ=([0-9.]+)px · (手动|按脸宽|按分辨率)")  # in the low layer's name: its radius and how it was sized
+FS_MAX_RADIUS = 200.0
+
+
+def blur_radius_arg(value):
+    """--blur-radius: a radius in pixels (more than 0, up to FS_MAX_RADIUS), or `auto`."""
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        radius = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is neither a radius in pixels nor auto") from None
+    if not 0 < radius <= FS_MAX_RADIUS:
+        raise argparse.ArgumentTypeError(f"the radius must be more than 0 and at most {FS_MAX_RADIUS:g} pixels")
+    return radius
+
+
+def frequency_radius(project, args):
+    """The frequency separation's radius and how it was sized: --blur-radius as given, else 1/FS_FACE of the largest
+    face's width, else from the resolution."""
+    if isinstance(args.blur_radius, float):
+        return args.blur_radius, "手动"
+    if project.faces():
+        return max(1.5, round(project.face_width() / FS_FACE, 1)), "按脸宽"
+    return fs_radius(project.width, project.height), "按分辨率"
+
+
+def frequency_pixels(project, radius):
+    """The low and high layers' pixels at `radius`: floats 0-1 from a 16-bit photo, else 8-bit."""
     photo = project.deep_base()
     if photo is not None:
-        # A 16-bit photo gets a 16-bit pair: the opaque low layer would otherwise make all of it 8-bit again.
         low = cv2.GaussianBlur(photo, (0, 0), radius)
-        high = np.clip((photo - low) * 0.5 + 0.5, 0, 1)
+        return low, np.clip((photo - low) * 0.5 + 0.5, 0, 1)
+    rgb = project.base_rgb()
+    low = cv2.GaussianBlur(rgb, (0, 0), radius)
+    # Linear Light adds 2 * high - 1, so storing half the difference rebuilds the photo to within one level
+    # and never clips; the full difference would double the detail and clip at strong edges.
+    high = np.rint((rgb.astype(np.float32) - low.astype(np.float32) + 255.0) * 0.5).astype(np.uint8)
+    return low, high
+
+
+def layer_plane(project, record):
+    """A layer's own pixels at the file's precision (8 or 16 bits): RGB 0-1 and whether every pixel is opaque. None
+    when it can't be read."""
+    try:
+        pixels = cv2.imdecode(np.fromfile(project.file_path(record["imageFile"]), np.uint8), cv2.IMREAD_UNCHANGED)
+    except (OSError, KeyError):
+        return None
+    if pixels is None or pixels.ndim != 3:
+        return None
+    top = 65535.0 if pixels.dtype == np.uint16 else 255.0
+    opaque = pixels.shape[2] < 4 or int(pixels[..., 3].min()) == int(top)
+    return cv2.cvtColor(pixels[..., :3], cv2.COLOR_BGR2RGB).astype(np.float32) / top, opaque
+
+
+def pair_untouched(project, pair):
+    """Whether no one has worked on the frequency pair: both layers whole, unmasked and opaque, and together still the
+    photo under them (Linear Light: low + 2 * high - 1) to within what making them leaves (a level at 8 bits, half a
+    level at 16), so a single brush stroke on either counts."""
+    if any(record.get("maskFile") or not whole_canvas(project, record) for record in pair):
+        return False
+    planes = [layer_plane(project, record) for record in pair]
+    if any(plane is None or not plane[1] or plane[0].shape[:2] != (project.height, project.width) for plane in planes):
+        return False
+    (low, _), (high, _) = planes
+    photo = project.deep_base() if all(is_deep(project, record) for record in pair) else None
+    if photo is None:
+        photo, tolerance = project.base_rgb().astype(np.float32) / 255.0, 1.5 / 255.0
+    else:
+        tolerance = 0.5 / 255.0
+    return float(np.abs(low + 2.0 * high - 1.0 - photo).max()) <= tolerance
+
+
+def remake_frequency_pair(project, args, pair):
+    """A run with --freq-sep on a project that has the pair: left as it is unless --blur-radius asks for another radius
+    (a number unlike the pair's, or `auto` for a pair sized by hand), and then made again in place (ids, names, place
+    kept) only if no one has worked on it yet; hand work on it is never overwritten."""
+    low_record, high_record = pair
+    found = FS_SIGMA.search(str(low_record.get("name", "")))
+    current, sized_as = (float(found.group(1)), found.group(2)) if found else (None, None)
+    asked = args.blur_radius
+    if asked is None:
+        say("[SKIP] A frequency-separation pair already sits above the photo (--blur-radius makes it again at another "
+            "radius)")
+        return
+    if asked == "auto" and sized_as != "手动":
+        say(f"[SKIP] The frequency-separation pair is already sized automatically"
+            f"{f' (σ={current:g}px · {sized_as})' if found else ''}")
+        return
+    if isinstance(asked, float) and current is not None and abs(current - asked) < 0.05:
+        say(f"[SKIP] The frequency-separation pair is already σ={current:g}px")
+        return
+    if not pair_untouched(project, pair):
+        warn("the frequency-separation pair has been worked on (or masked, moved, or the photo under it changed), so "
+             "it keeps its radius: to change it, delete the 🎚️ 高低频 folder and add --freq-sep again")
+        return
+    radius, sized = frequency_radius(project, args)
+    low, high = frequency_pixels(project, radius)
+    note = f"重做 · σ={radius:g}px · {sized}"
+    name = FS_SIGMA.sub(f"σ={radius:g}px · {sized}", low_record["name"]) if found else low_record["name"]
+    remade(project, low_record, low, note, name=name)
+    remade(project, high_record, high, note)
+
+
+def module_freq_sep(project, args):
+    pair = project.frequency_pair()
+    if pair:
+        remake_frequency_pair(project, args, pair)
+        return
+    radius, sized = frequency_radius(project, args)
+    folder = project.folder(FOLDER_NAMES["freq_sep"])
+    names = (f"{FS_LOW} · 肤色与光影 (Low σ={radius:g}px · {sized})", f"{FS_HIGH} · 纹理与毛孔 (High · Linear Light)")
+    low, high = frequency_pixels(project, radius)
+    if low.dtype != np.uint8:
+        # A 16-bit photo gets a 16-bit pair: the opaque low layer would otherwise make all of it 8-bit again.
         low_record = project.deep_layer(names[0], low, parent=folder)
         high_record = project.deep_layer(names[1], high, blend="Linear Light", parent=folder)
     else:
-        rgb = project.base_rgb()
-        low = cv2.GaussianBlur(rgb, (0, 0), radius)
-        # Linear Light adds 2 * high - 1, so storing half the difference rebuilds the photo to within one level
-        # and never clips; the full difference would double the detail and clip at strong edges.
-        high = np.rint((rgb.astype(np.float32) - low.astype(np.float32) + 255.0) * 0.5).astype(np.uint8)
         low_record = project.pixel_layer(names[0], Image.fromarray(low), parent=folder)
         high_record = project.pixel_layer(names[1], Image.fromarray(high), blend="Linear Light", parent=folder)
     # Right above the photo: the opaque low layer would otherwise hide every layer under it. The pair rebuilds
@@ -3479,7 +3575,7 @@ def recorded_strength(name, default):
 SMOOTH_ENGINES = {"form": "保形 · 淡化痘印", "guided": "导向滤波", "bilateral": "双边滤波"}  # as layer names say them
 
 
-def smoothing_pixels(project, work, engine, texture, strength, blur_radius=None, manual=False, deep=False):
+def smoothing_pixels(project, work, engine, texture, strength, manual=False, deep=False):
     """The smoothing layer's pixels made from `work` (0-1): 8-bit, or floats 0-1 when `deep` (a 16-bit layer from
     the 16-bit photo), and how its name tells of the spots healed first. `manual`: for a layer brushed on by hand,
     computed over all the people's skin (Project.skin_reach), not the face alone."""
@@ -3508,8 +3604,6 @@ def smoothing_pixels(project, work, engine, texture, strength, blur_radius=None,
     else:
         sigma = fs_radius(project.width, project.height) * 150.0 / fraction
         radius = max(10.0, min(project.width, project.height) / 100.0)
-    if blur_radius and blur_radius > 0:
-        sigma = blur_radius
     if engine == "form":
         return smooth_skin_form(work8, mask, faces, face_width, sigma, reach=reach), cleared
     return smooth_skin(work8, engine, sigma, radius), cleared
@@ -3524,11 +3618,21 @@ def smoothing_name(args, cleared, mask_label, strength, manual=False):
             f"{TEXTURES[args.texture][1]}{strength_note(strength)} ({mask_label})")
 
 
+def smoothing_manual(project, args):
+    """Whether the smoothing is brushed on by hand: as `--delicious-skin auto|manual` says, else as the project's
+    smoothing already is (one kind there: that layer is made again rather than the other kind stacked on it), else by
+    hand, as DR5's manual smoothing."""
+    if args.delicious_skin in ("auto", "manual"):
+        return args.delicious_skin == "manual"
+    kinds = {is_manual(r["name"]) for r in project.layers if refreshed_kind(r) == SMOOTH and whole_canvas(project, r)}
+    return kinds.pop() if len(kinds) == 1 else True
+
+
 def module_delicious_skin(project, args):
     """The smoothing layer; run again on a project that has one of the same kind (skin mask, or brushed by hand),
     that layer is made again in place with this run's settings, its mask kept: a second click doesn't stack a
     second layer, and a new strength or texture takes effect."""
-    manual = args.delicious_skin == "manual"
+    manual = smoothing_manual(project, args)
     strength = skin_strength(args)
     opacity = round(min(1.0, 0.88 * strength), 2)
     same = [r for r in project.layers if refreshed_kind(r) == SMOOTH and is_manual(r["name"]) == manual
@@ -3537,7 +3641,7 @@ def module_delicious_skin(project, args):
         record = same[-1]
         photo = deep_under(project, record) if is_deep(project, record) else None
         smoothed, cleared = smoothing_pixels(project, project.composite_before(record) if photo is None else photo,
-                                             args.engine, args.texture, strength, args.blur_radius, manual=manual,
+                                             args.engine, args.texture, strength, manual=manual,
                                              deep=photo is not None)
         label = MANUAL_MASK if manual else project.skin()[1]
         remade(project, record, smoothed, "重做 · 保留蒙版 · 要换自动/手动蒙版先删掉这层",
@@ -3549,7 +3653,7 @@ def module_delicious_skin(project, args):
     # heavy grading over the skin later finds no 8-bit steps in it.
     photo = deep_under(project)
     smoothed, cleared = smoothing_pixels(project, project.work() if photo is None else photo, args.engine, args.texture,
-                                         strength, args.blur_radius, manual=manual, deep=photo is not None)
+                                         strength, manual=manual, deep=photo is not None)
     if manual:  # DR5's manual smoothing: brushed on where it's wanted
         layer_mask, alpha, mask_label = solid_mask(0), np.zeros(mask.shape, np.float32), MANUAL_MASK
     else:
@@ -4095,9 +4199,11 @@ def parse_args(argv):
     parser.add_argument("--texture", choices=sorted(TEXTURES), default="natural",
                         help="how much fine skin texture the smoothing keeps: natural (default, about as much as the "
                              "photo), soft (about DR5's), smooth (polished)")
-    parser.add_argument("--blur-radius", type=float, default=None,
-                        help="frequency-separation radius in pixels (default: 1/200 of the largest face's width, at "
-                             "least 1.5; without a face, from the resolution)")
+    parser.add_argument("--blur-radius", type=blur_radius_arg, default=None, metavar="PX|auto",
+                        help="the frequency separation's radius in pixels, up to 200, or auto: 1/200 of the largest "
+                             "face's width, at least 1.5 (without a face, from the resolution), as when it is left "
+                             "out. Given on a project that has a pair no one has worked on yet, it makes the pair "
+                             "again at this radius; the smoothing has its own")
     parser.add_argument("--strength", type=float, default=1.0,
                         help="0.1-2: scales the glow's and a look's opacity, and the smoothing unless --skin-strength "
                              "is given (default 1)")
@@ -4109,9 +4215,11 @@ def parse_args(argv):
                              "place, from the project as it is now: after manual work under them, on the "
                              "frequency-separation layers say. Masks, opacity and names stay; save in Compositor first")
     parser.add_argument("--freq-sep", action="store_true", help="low/high frequency pair above the photo")
-    parser.add_argument("--delicious-skin", nargs="?", const="auto", choices=["auto", "manual"],
-                        help="DR5-style texture-keeping skin smoothing (spots healed first): on the skin mask, or "
-                             "`manual` with a black mask to brush it on where wanted (as DR5's manual smoothing)")
+    # No `choices`: Python before 3.12 checks a bare flag's const against them, and the const has to be truthy.
+    parser.add_argument("--delicious-skin", nargs="?", const="default", metavar="auto|manual",
+                        help="DR5-style texture-keeping skin smoothing (spots healed first), with a black mask to "
+                             "brush it on where wanted (as DR5's manual smoothing), or `auto`: masked to the skin "
+                             "found. Left unsaid, a project that has one kind keeps it")
     parser.add_argument("--sculpt", action="store_true",
                         help="3D sculpt: a live Tonal Contrast layer through a mask painted on the face's planes "
                              "(format 18+; a mid-frequency contrast pixel layer in a project before that)")
@@ -4166,6 +4274,8 @@ def run(args):
         raise BuildError("--strength must be between 0.1 and 2")
     if args.skin_strength is not None and not 0.1 <= args.skin_strength <= 2.0:
         raise BuildError("--skin-strength must be between 0.1 and 2")
+    if args.delicious_skin not in (None, "default", "auto", "manual"):
+        raise BuildError(f"--delicious-skin takes auto or manual, not {args.delicious_skin!r}")
     keys = {key for key, _ in MODULES}
     left_out = {name.strip().lstrip("-").replace("-", "_") for name in args.without}
     if left_out - keys:
@@ -4180,6 +4290,8 @@ def run(args):
         raise BuildError("--8bit only applies together with --init")
     if not args.init and not wanted and args.render is None:
         raise BuildError("nothing to do: pass --init <photo>, --preset, a module flag or --render (see --help)")
+    if args.blur_radius is not None and "freq_sep" not in wanted:
+        warn("--blur-radius sizes only the frequency separation, which this run doesn't make (add --freq-sep)")
 
     project = Project.create(path, args.init, args.force, deep=not args.eight_bit) if args.init else Project.open(path)
     project.use_vision = not args.no_vision

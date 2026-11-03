@@ -88,13 +88,17 @@ def parse_args(argv, RB):
     p.add_argument("--preset", choices=sorted(RB.PRESETS), help="daily, or for a new document dr5 or studio")
     p.add_argument("--engine", choices=sorted(RB.SMOOTH_ENGINES), default="form")
     p.add_argument("--texture", choices=sorted(RB.TEXTURES), default="natural")
-    p.add_argument("--blur-radius", type=float)
+    p.add_argument("--blur-radius", type=RB.blur_radius_arg, metavar="PX|auto",
+                   help="the frequency separation's radius (a new pair only: PhotoCraft's is not made again)")
     p.add_argument("--strength", type=float, default=1.0, help="0.1-2: glow and look strength (and smoothing)")
     p.add_argument("--skin-strength", type=float, help="0.1-2: the smoothing's own strength")
     p.add_argument("--refresh", action="store_true", help="recompute the smoothing and re-stamp sculpt, eye "
                    "brilliance and soft focus from the document as it is now (save it in PhotoCraft first)")
     p.add_argument("--freq-sep", action="store_true")
-    p.add_argument("--delicious-skin", nargs="?", const="auto", choices=("auto", "manual"))
+    # As the builder's: no `choices`, which Python before 3.12 checks the bare flag's const against.
+    p.add_argument("--delicious-skin", nargs="?", const="default", metavar="auto|manual",
+                   help="black mask to brush on (default), or auto: masked to the skin found; left unsaid, a document "
+                        "that has one kind keeps it")
     p.add_argument("--sculpt", action="store_true")
     p.add_argument("--neutral-gray", action="store_true")
     p.add_argument("--dual-curves", action="store_true")
@@ -122,8 +126,10 @@ def parse_args(argv, RB):
         raise Fail(f"--without: no module called {', '.join(sorted(left_out - set(keys)))}")
     wanted = set(RB.PRESETS.get(args.preset, [])) - left_out
     wanted.update(key for key in keys if getattr(args, key))
+    if args.delicious_skin not in (None, "default", "auto", "manual"):
+        raise Fail(f"--delicious-skin takes auto or manual, not {args.delicious_skin!r}")
     if "delicious_skin" in wanted and not args.delicious_skin:
-        args.delicious_skin = "auto"
+        args.delicious_skin = "default"
     if args.preset in ("dr5", "studio") and not args.init:
         raise Fail(f"--preset {args.preset} builds a new document: add --init <photo>")
     if args.force and not args.init:
@@ -138,8 +144,6 @@ def common_flags(args):
     flags = ["--engine", args.engine, "--texture", args.texture, "--strength", f"{args.strength:g}"]
     if args.skin_strength is not None:
         flags += ["--skin-strength", f"{args.skin_strength:g}"]
-    if args.blur_radius:
-        flags += ["--blur-radius", f"{args.blur_radius:g}"]
     for flag in ("no_vision", "no_parsing", "no_checks"):
         if getattr(args, flag):
             flags.append("--" + flag.replace("_", "-"))
@@ -148,7 +152,10 @@ def common_flags(args):
 
 def module_flags(args, key):
     if key == "delicious_skin":
-        return ["--delicious-skin", args.delicious_skin or "auto"]
+        return ["--delicious-skin", args.delicious_skin if args.delicious_skin in ("auto", "manual") else "manual"]
+    if key == "freq_sep" and args.blur_radius is not None:  # it sizes nothing else
+        radius = args.blur_radius
+        return ["--freq-sep", "--blur-radius", radius if radius == "auto" else f"{radius:g}"]
     if key == "look":
         return ["--look", args.look]
     if key == "glow":
@@ -652,7 +659,9 @@ class Run:
         top = self.doc.tree()
         names = [n.name for n in self.doc.flat(top)]
         if key in MADE_BY and any(name.startswith(MADE_BY[key]) for name in names):
-            say(f"[SKIP] --{key.replace('_', '-')}: the document has it already")
+            radius = " (PhotoCraft's pair isn't made again at another radius: delete the 🎚️ 高低频 group first)" \
+                if key == "freq_sep" and args.blur_radius is not None else ""
+            say(f"[SKIP] --{key.replace('_', '-')}: the document has it already{radius}")
             return
         if key == "look":
             label = RB.LOOKS[args.look][0]
@@ -663,9 +672,14 @@ class Run:
             say("[SKIP] --dual-curves: the document has both curves")
             return
         if key == "delicious_skin":
-            manual = args.delicious_skin == "manual"
-            same = [n for n in self.doc.flat(top) if n.name.startswith(RB.SMOOTH)
-                    and n.name.startswith(RB.MANUAL_PREFIX) == manual]
+            smoothing = [n for n in self.doc.flat(top) if n.name.startswith(RB.SMOOTH)]
+            if args.delicious_skin in ("auto", "manual"):
+                manual = args.delicious_skin == "manual"
+            else:  # left unsaid: the kind the document has (one only), so it is made again, else brushed on by hand
+                kinds = {n.name.startswith(RB.MANUAL_PREFIX) for n in smoothing}
+                manual = kinds.pop() if len(kinds) == 1 else True
+                args.delicious_skin = "manual" if manual else "auto"
+            same = [n for n in smoothing if n.name.startswith(RB.MANUAL_PREFIX) == manual]
             if same:
                 for node in same:
                     self.redo_skin(node, manual, keep_settings=False)

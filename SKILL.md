@@ -13,7 +13,7 @@ description: >-
 
 # Compositor 人像精修工程
 
-`scripts/retouch_builder.py` 从一张照片新建 Compositor `.comp` 工程，或给已有工程追加精修图层。生成的都是普通图层：用户在 Compositor 里调不透明度、在蒙版上擦改即可。工具围绕一套手工精修流程：中性灰或双曲线做光影，DR5 式磨皮（自动蒙版或手动刷出），再按需加滤镜（调色、辉光）。各模块的算法、阈值和对比数据都在 [references/modules.md](references/modules.md)，按小节名查，不用整个读。
+`scripts/retouch_builder.py` 从一张照片新建 Compositor `.comp` 工程，或给已有工程追加精修图层。生成的都是普通图层：用户在 Compositor 里调不透明度、在蒙版上擦改即可。工具围绕一套手工精修流程：中性灰或双曲线做光影，DR5 式磨皮（默认像 PS 一样黑蒙版手动刷出，也可自动蒙版），再按需加滤镜（调色、辉光）。各模块的算法、阈值和对比数据都在 [references/modules.md](references/modules.md)，按小节名查，不用整个读。
 
 ## 规则
 
@@ -36,14 +36,17 @@ python3 "$B" --init "/path/portrait.jpg" --comp "/path/Portrait.comp" --preset d
 # 新建：影棚工程（高低频、中性灰、双曲线、观察组），留给手工精修
 python3 "$B" --init "/path/portrait.jpg" --comp "/path/Portrait.comp" --preset studio
 
-# 常用：中性灰调光影 + DR5 磨皮（自动蒙版）+ 观察组；新建或已有工程都行，再跑一次不会重复加层
+# 常用：中性灰调光影 + DR5 磨皮（黑蒙版，手动刷出）+ 观察组；新建或已有工程都行，再跑一次不会重复加层
 python3 "$B" --comp "/path/Portrait.comp" --preset daily
 
 # 磨皮轻一点（只影响磨皮；--strength 管辉光和调色）
 python3 "$B" --comp "/path/Portrait.comp" --preset daily --skin-strength 0.6
 
-# DR5 手动磨皮：磨皮层带黑蒙版，用白画笔刷哪里磨哪里
-python3 "$B" --comp "/path/Portrait.comp" --delicious-skin manual
+# 磨皮默认像 PS 里 DR5 手动磨皮：磨皮层带黑蒙版，用白画笔刷哪里磨哪里；要按识别出的皮肤自动盖上，写 auto
+python3 "$B" --comp "/path/Portrait.comp" --delicious-skin auto
+
+# 高低频换半径（像素；auto 回到按脸宽）：还没手修过的高低频按新半径原地重做，手修过的不动
+python3 "$B" --comp "/path/Portrait.comp" --freq-sep --blur-radius 8
 
 # 给已有工程追加模块（可同时给多个），--strength 调整力度
 python3 "$B" --comp "/path/Portrait.comp" --sculpt --eyes --strength 0.7
@@ -72,8 +75,8 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 | 预设 | 图层（自下而上，［］是文件夹） | 需要 `--init` |
 |---|---|---|
-| `daily` | ［🧴 皮肤：DR5 磨皮（88%）］ → ［🌓 光影：中性灰］ → 观察组。日常流程：中性灰调光影，再磨一下皮 | 否 |
-| `dr5` | 原图 → ［🎚️ 高低频］ → ［🧴 皮肤：DR5 磨皮（88%）］ → ［🌓 光影：3D 骨相、双曲线］ → ［😊 五官：眼神光］ → 胶片颗粒 → 观察组 | 是 |
+| `daily` | ［🧴 皮肤：DR5 磨皮（88%，黑蒙版）］ → ［🌓 光影：中性灰］ → 观察组。日常流程：中性灰调光影，再刷出要磨的皮肤 | 否 |
+| `dr5` | 原图 → ［🎚️ 高低频］ → ［🧴 皮肤：DR5 磨皮（88%，黑蒙版）］ → ［🌓 光影：3D 骨相、双曲线］ → ［😊 五官：眼神光］ → 胶片颗粒 → 观察组 | 是 |
 | `studio` | 原图 → ［🎚️ 高低频］ → ［🌓 光影：中性灰、双曲线］ → 观察组 | 是 |
 
 `dr5`、`studio` 只能用于新建工程；给已有工程加同样的内容时，把模块逐个列出即可，例如 `--freq-sep --delicious-skin --sculpt --dual-curves --eyes --grain --inspection`。`--without 模块` 可以从预设里去掉某项。
@@ -82,9 +85,9 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 | 参数 | 生成内容 | 图层 · 所在文件夹 | 用户接下来做什么 |
 |---|---|---|---|
-| `--freq-sep` | 高低频，半径按最大那张脸的宽度 | 两层像素 · 「🎚️ 高低频」紧贴原图 | 低频匀色、高频修瑕疵；手修后 `--refresh` |
-| `--delicious-skin` | DR5 磨皮：先祛痘（图层名标"祛痘 N 处"），再保形平滑，五官旁放轻 | 像素 · 88% · 皮肤蒙版 · 「🧴 皮肤」 | 调不透明度；检查、修补蒙版 |
-| `--delicious-skin manual` | 同上，手动磨皮：黑蒙版，算到全身皮肤 | 像素 · 88% · 黑蒙版 · 「🧴 皮肤」 | 白画笔刷出要磨的区域 |
+| `--freq-sep` | 高低频，半径按最大那张脸的宽度，或 `--blur-radius` 给的 | 两层像素 · 「🎚️ 高低频」紧贴原图 | 低频匀色、高频修瑕疵；手修后 `--refresh` |
+| `--delicious-skin` | DR5 磨皮：先祛痘（图层名标"祛痘 N 处"），再保形平滑，五官旁放轻；算到全身皮肤，黑蒙版 | 像素 · 88% · 黑蒙版 · 「🧴 皮肤」 | 白画笔刷出要磨的区域，低流量分层刷 |
+| `--delicious-skin auto` | 同上，蒙版按识别出的皮肤自动盖上 | 像素 · 88% · 皮肤蒙版 · 「🧴 皮肤」 | 调不透明度；检查、修补蒙版 |
 | `--sculpt` | 3D 骨相：Tonal Contrast 实时调整层（格式 18 起；更早的工程是中频反差像素层） | 调整层 · 预涂鼻梁、颧骨、眉骨、下巴 · 「🌓 光影」 | 白画笔加强、黑画笔收回；双击改强度 |
 | `--neutral-gray` | 50% 中性灰 | 像素 · 柔光 · 「🌓 光影」 | 浅灰、深灰画笔涂亮、涂暗 |
 | `--dual-curves` | 双曲线：提亮、压暗各一层 | 曲线调整层 · 明度 · 黑蒙版 · 「🌓 光影」 | 低流量白画笔做 dodge & burn |
@@ -96,7 +99,7 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 其他参数：
 - `--strength 0.1–2`：辉光和调色的强度；没给 `--skin-strength` 时也管磨皮。`--skin-strength 0.1–2`：只管磨皮的不透明度和祛痘灵敏度，记进图层名，`--refresh` 照用；皮肤本来就好用 0.5–0.7。
-- `--texture natural|soft|smooth`：磨皮保留多少细纹理（默认 `natural`）。`--engine form|guided|bilateral`：磨皮引擎（默认 `form`，保形）。`--blur-radius N`：高低频半径。
+- `--texture natural|soft|smooth`：磨皮保留多少细纹理（默认 `natural`）。`--engine form|guided|bilateral`：磨皮引擎（默认 `form`，保形）。`--blur-radius 像素|auto`：只管高低频的半径（磨皮有自己的），最大 200；已有高低频时，给了不同的半径（或给 `auto` 而原来是手动的）就原地重做，但只在两层还没被手修过（加起来仍等于原图、没加蒙版、没挪动）时，否则不动并提示。
 - `--no-vision`：不用 Apple Vision 找人脸。`--no-parsing`：不用人像分割模型。`--without 模块`：从预设里去掉某项，可重复。
 - `--force`：配合 `--init` 替换已有工程。`--8bit`：配合 `--init`，只写 1.5 以前的 Compositor 读得懂的内容（8 位、像素层、格式 11）。`--no-checks`：不生成检查图。`--progress`：每步打印 `[STEP]`。
 - `--render [文件]`：按 Compositor 导出的方式把整个工程合成一张图（默认 `<名称>.render.jpg`），可单独用（只读工程）；用 Read 看它就能确认最终效果，不用打开 Compositor。
@@ -114,11 +117,11 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 ## 检查图
 
-脚本在工程旁写 `<名称>.checks/`（不在 `.comp` 包里）并打印路径。**每次生成后用 Read 工具看 `overview.jpg`**，一张图里是修前、修后、皮肤蒙版、五官预涂；加了 `--look`、`--glow` 时再看 `look.jpg`、`glow.jpg`（整幅的加前、加后对比）。图例：绿色是皮肤蒙版，洋红是被排除的头发，蓝线圈出磨皮避开的五官，黄框是人脸，红圈是祛痘处；青色是虹膜、橙色是骨相的预涂，白点是关键点。确认蒙版没盖到头发或衣服，红圈没落在五官或发际线上，预涂落在对应五官上，修后不发假，再把发现告诉用户。效果过重就用更小的 `--strength` 重新生成；关键点明显错位就加 `--no-vision` 重做，并告诉用户这些蒙版需要手涂。
+脚本在工程旁写 `<名称>.checks/`（不在 `.comp` 包里）并打印路径。**每次生成后用 Read 工具看 `overview.jpg`**，一张图里是修前、修后、皮肤蒙版、五官预涂；加了 `--look`、`--glow` 时再看 `look.jpg`、`glow.jpg`（整幅的加前、加后对比）。图例：绿色是皮肤蒙版，洋红是被排除的头发，蓝线圈出磨皮避开的五官，黄框是人脸，红圈是祛痘处；青色是虹膜、橙色是骨相的预涂，白点是关键点。确认蒙版没盖到头发或衣服，红圈没落在五官或发际线上，预涂落在对应五官上，修后不发假，再把发现告诉用户。磨皮是默认的手动刷出（黑蒙版）时，修后图里还看不出磨皮，这是正常的：要等用户在 Compositor 里刷。效果过重就用更小的 `--strength` 重新生成；关键点明显错位就加 `--no-vision` 重做，并告诉用户这些蒙版需要手涂。
 
 ## 须知
 
-- 重复运行不会堆第二套图层：高低频、中性灰、骨相、实时的眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（`重做 · 保留蒙版`），双曲线只补缺的那一层，只有辉光会叠加。
+- 重复运行不会堆第二套图层：高低频（换了 `--blur-radius` 且没手修过时按新半径重做）、中性灰、骨相、实时的眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（`重做 · 保留蒙版`），双曲线只补缺的那一层，只有辉光会叠加。没写 `auto`/`manual` 时，工程里已有的磨皮是哪种就重做哪种。
 - 像素层是快照，调整层是实时的。骨相、眼神光在格式 18/19 起的工程里是实时调整层，更早的工程里是像素层，脚本会说明；新建工程的版本跟着内容走（含眼神光 19，`--8bit` 固定 11），已有工程保持版本，在 Compositor 里保存一次就升到最新格式（1.5.x 是 20，1.6 是 21）。
 - 写入是安全的：新文件先放在包内隐藏文件夹 `.retouch/`，校验通过后几毫秒内一起落地，Compositor 只重载一次；运行中工程若被 Compositor 保存过，脚本报错退出、不改动，再跑一次即可。
 - `app/` 里是这个脚本的 macOS 图形界面「Compositor 工具」：自动认出 Compositor 正在编辑的工程、一键精修、批量处理，不用和 AI 对话。用户想点按钮时告诉他们，不要替用户启动它，也不要打开访达。

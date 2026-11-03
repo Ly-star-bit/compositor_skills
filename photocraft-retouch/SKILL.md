@@ -50,15 +50,15 @@ python3 "$P" --pcraft "/path/Portrait.pcraft" --refresh
 python3 "$P" --pcraft "/path/Portrait.pcraft" --render
 ```
 
-参数和 compositor-retouch 的 `retouch_builder.py` 相同，只是用 `--pcraft` 代替 `--comp`：`--preset daily|dr5|studio`、`--strength`、`--skin-strength`、`--texture`、`--engine`、`--blur-radius`、`--without`、`--no-vision`、`--no-parsing`、`--no-checks`、`--progress`。没有 `--8bit` 和 `--check`：照片是 16 位时文档就是 16 位，文档由 PhotoCraft 自己写。输入支持 JPEG、PNG、TIFF；HEIC、RAW 先转换（`sips -s format tiff in.heic --out in.tif`）。
+参数和 compositor-retouch 的 `retouch_builder.py` 相同，只是用 `--pcraft` 代替 `--comp`：`--preset daily|dr5|studio`、`--strength`、`--skin-strength`、`--texture`、`--engine`、`--blur-radius 像素|auto`（只管新建的高低频：文档里已有的不会按新半径重做，要换先删掉「🎚️ 高低频」组）、`--without`、`--no-vision`、`--no-parsing`、`--no-checks`、`--progress`。没有 `--8bit` 和 `--check`：照片是 16 位时文档就是 16 位，文档由 PhotoCraft 自己写。输入支持 JPEG、PNG、TIFF；HEIC、RAW 先转换（`sips -s format tiff in.heic --out in.tif`）。
 
 ## 模块
 
 | 参数 | PhotoCraft 里是什么 | 用户接下来做什么 |
 |---|---|---|
 | `--freq-sep` | 「🎚️ 高低频」组：低频、高频（线性光）两个像素层，紧贴原图 | 低频匀色、高频用仿制图章修瑕疵；修完 ⌘S，再 `--refresh` |
-| `--delicious-skin` | 「🧴 皮肤」组：DR5 磨皮，智能对象 · 88% · 皮肤蒙版 | 调不透明度；在蒙版上擦改 |
-| `--delicious-skin manual` | 同上，黑蒙版，算到全身皮肤 | 白画笔刷出要磨的地方 |
+| `--delicious-skin` | 「🧴 皮肤」组：DR5 磨皮，智能对象 · 88% · 黑蒙版，算到全身皮肤（默认，和 PS 手动磨皮一样）；没写 `auto`/`manual` 时，文档里已有哪种就重做哪种 | 白画笔刷出要磨的地方 |
+| `--delicious-skin auto` | 同上，蒙版按识别出的皮肤自动盖上 | 调不透明度；在蒙版上擦改 |
 | `--sculpt` | 「🌓 光影」组：3D 骨相，盖印的智能对象 + 高反差保留智能滤镜 · 柔光 · 预涂鼻梁、颧骨、眉骨、下巴 | 白画笔加强、黑画笔收回；双击智能滤镜改半径 |
 | `--neutral-gray` | 「🌓 光影」组：50% 中性灰像素层 · 柔光 | 浅灰、深灰画笔涂亮、涂暗 |
 | `--dual-curves` | 「🌓 光影」组：提亮、压暗两个曲线调整层 · 明度 · 黑蒙版 | 低流量白画笔做 dodge & burn |

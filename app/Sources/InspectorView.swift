@@ -13,6 +13,7 @@ struct InspectorView: View {
                     presetCard
                     ForEach(ModuleGroup.allCases) { group in moduleCard(group) }
                     smoothingCard
+                    freqSepCard
                     lookCard
                     glowCard
                     finishCard
@@ -183,15 +184,15 @@ struct InspectorView: View {
             Text("方式").font(.system(size: 12, weight: .semibold))
             HStack(spacing: 6) {
                 ForEach(SmoothingMask.allCases) { mask in
-                    Chip(title: mask.title, symbol: mask == .auto ? "person.crop.circle.dashed" : "paintbrush.pointed",
+                    Chip(title: mask.title, symbol: mask == .manual ? "paintbrush.pointed" : "person.crop.circle.dashed",
                          selected: studio.settings.smoothingMask == mask) {
                         studio.settings.smoothingMask = mask
                     }
                 }
             }
             Text(smoothingOn
-                 ? (studio.settings.smoothingMask == .auto ? "自动：按识别出的皮肤范围盖上，蒙版可擦改"
-                                                            : "手动：图层带黑蒙版，像 DR5 手动磨皮一样用白画笔刷哪里磨哪里")
+                 ? (studio.settings.smoothingMask == .manual ? "手动：图层带黑蒙版，像 PS 里 DR5 手动磨皮一样，用白画笔刷哪里磨哪里"
+                                                              : "自动：按识别出的皮肤范围盖上，蒙版可擦改")
                  : "打开「DR5 磨皮」后可选")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -219,6 +220,45 @@ struct InspectorView: View {
         }
         .disabled(!smoothingOn)
         .opacity(smoothingOn ? 1 : 0.55)
+        .glassCard()
+    }
+
+    // MARK: frequency separation: the radius
+
+    private var freqSepOn: Bool { studio.settings.isOn("freq-sep") }
+
+    private var freqSepCard: some View {
+        let auto = studio.settings.freqSepAuto
+        let note = auto ? "自动：脸宽的 1/200，毛孔、细纹、小瑕疵进高频，肤色和明暗留在低频"
+                        : "手动：半径越大，进高频的越多（再大一些，色块、明暗也会进去）"
+        let redo = studio.target == .photocraft ? "PhotoCraft 文档里已有的高低频不会重做，换半径先删掉那个组"
+                                                : "已有的高低频没手修过时，换半径再点精修会按新半径重做；手修过的不动"
+        return VStack(alignment: .leading, spacing: 10) {
+            SectionTitle(title: "高低频", symbol: "square.split.2x1",
+                         trailing: freqSepOn ? (auto ? "按脸宽" : Arguments.radiusText(studio.settings.freqSepRadius)) : "未开")
+            Text("半径").font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 6) {
+                Chip(title: "按脸宽", symbol: "face.dashed", selected: auto) { studio.settings.freqSepAuto = true }
+                Chip(title: "手动", symbol: "slider.horizontal.3", selected: !auto) { studio.settings.freqSepAuto = false }
+            }
+            if !auto {
+                Slider(value: Binding(get: { studio.settings.freqSepRadius },
+                                      set: { studio.settings.freqSepRadius = ($0 * 2).rounded() / 2 }),
+                       in: RetouchSettings.freqSepRadii) {
+                    EmptyView()
+                } minimumValueLabel: {
+                    Text("细").font(.system(size: 11)).foregroundStyle(.secondary)
+                } maximumValueLabel: {
+                    Text("粗").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                .tint(Theme.accentColor)
+            }
+            Text(freqSepOn ? note + "。" + redo : "打开「高低频」后可选")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .disabled(!freqSepOn)
+        .opacity(freqSepOn ? 1 : 0.55)
         .glassCard()
     }
 

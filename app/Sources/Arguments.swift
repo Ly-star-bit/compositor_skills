@@ -89,18 +89,24 @@ enum Arguments {
     /// Every module switch in the inspector's order, grain last.
     static let moduleOrder: [String] = ModuleGroup.allCases.flatMap { $0.modules.map(\.flag) } + ["grain"]
 
-    /// What the settings will do, in a line: "DR5（已调整）· 7 项 · 手动刷出 · 胶片暖调 · 黑柔".
+    /// What the settings will do, in a line: "DR5（已调整）· 7 项 · 自动蒙版 · 高低频 8px · 胶片暖调 · 黑柔".
     static func summary(_ settings: RetouchSettings) -> String {
         var parts = [settings.preset == .none ? "自选" : settings.preset.title + (settings.isCustomized ? "（已调整）" : "")]
         parts.append("\(settings.effectiveModules.count) 项")
         if settings.effectiveModules.contains("delicious-skin") {
-            if settings.smoothingMask == .manual { parts.append("手动刷出") }
+            if settings.smoothingMask == .auto { parts.append("自动蒙版") }
             if settings.skinStrength != .medium { parts.append("磨皮" + settings.skinStrength.title) }
+        }
+        if settings.effectiveModules.contains("freq-sep") && !settings.freqSepAuto {
+            parts.append("高低频 " + radiusText(settings.freqSepRadius))
         }
         if settings.look != .none { parts.append(settings.look.title) }
         if settings.glow != .none { parts.append(settings.glow.title) }
         return parts.joined(separator: " · ")
     }
+
+    /// "8px", "6.5px".
+    static func radiusText(_ radius: Double) -> String { String(format: "%gpx", radius) }
 
     static func glowSpec(_ settings: RetouchSettings) -> String? {
         switch settings.glow {
@@ -130,11 +136,18 @@ enum Arguments {
         let usePreset = settings.preset != .none && !(job.isProject && settings.preset.needsPhoto)
         if usePreset { args += ["--preset", settings.preset.rawValue] }
         var named = usePreset ? settings.modules.subtracting(settings.preset.includes) : settings.effectiveModules
-        // Manual smoothing is the same module with a value, so it is named even when the preset includes it (the
-        // script takes the union; `--delicious-skin manual` on top of --preset dr5 makes one layer, brushed on).
-        let manual = settings.smoothingMask == .manual && settings.effectiveModules.contains("delicious-skin")
-        if manual { named.insert("delicious-skin") }
-        args += moduleOrder.filter(named.contains).flatMap { $0 == "delicious-skin" && manual ? ["--delicious-skin", "manual"] : ["--\($0)"] }
+        // The smoothing is named with its mask even when the preset includes it, so the script never falls back on
+        // its own default (it takes the union; `--delicious-skin auto` on top of --preset dr5 makes one layer).
+        let smoothing = settings.effectiveModules.contains("delicious-skin")
+        if smoothing { named.insert("delicious-skin") }
+        args += moduleOrder.filter(named.contains).flatMap {
+            $0 == "delicious-skin" ? ["--delicious-skin", settings.smoothingMask.rawValue] : ["--\($0)"]
+        }
+        // The radius goes with every frequency separation: on a pair no one has worked on yet, another one makes it
+        // again (back to 自动 too); a pair worked on keeps its own.
+        if settings.effectiveModules.contains("freq-sep") {
+            args += ["--blur-radius", settings.freqSepAuto ? "auto" : String(format: "%g", settings.freqSepRadius)]
+        }
         if usePreset {
             args += moduleOrder.filter { settings.removed.contains($0) && settings.preset.includes.contains($0) }
                 .flatMap { ["--without", $0] }

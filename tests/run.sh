@@ -250,7 +250,7 @@ json.dump(m, open(p, 'w'), ensure_ascii=False)" "$1" "$2"
 }
 
 suite_skin_stack() {  # the layers stack in order, on new and existing projects
-    build --init "$PHOTO" --comp a.comp --delicious-skin --sculpt --neutral-gray --dual-curves --eyes --inspection \
+    build --init "$PHOTO" --comp a.comp --delicious-skin auto --sculpt --neutral-gray --dual-curves --eyes --inspection \
         > a.log 2>&1; want 0 $? "every module on a new project"
     order a.comp "folders: skin, light, features, the two observation folders on top" "🔍 观察组 · 黑白" "🔍 观察组 · 颜色" 😊 🌓 🧴 原图
     inside a.comp "skin folder: the smoothing" 🧴 🔥
@@ -273,7 +273,7 @@ suite_skin_stack() {  # the layers stack in order, on new and existing projects
 from PIL import Image; im = Image.open('a.checks/overview.jpg')
 print('  ok: overview.jpg is one sheet, %dx%d' % im.size if im.size[0] == 1600 and 1200 <= im.size[1] <= 2600 else '  BAD: overview.jpg %dx%d' % im.size)"
     [ -d a.checks ] && echo "  ok: checks: $(ls a.checks | tr '\n' ' ')" || echo "  BAD: no checks written"
-    build --init "$PHOTO" --comp d.comp --preset dr5 --no-checks > d.log 2>&1; want 0 $? "dr5"
+    build --init "$PHOTO" --comp d.comp --preset dr5 --delicious-skin auto --no-checks > d.log 2>&1; want 0 $? "dr5"
     inside d.comp "low and high in the frequency-separation folder" 🎚️ 高频 低频
     order d.comp "dr5: one folder each, frequency separation right above the photo" "🔍 观察组 · 黑白" "🔍 观察组 · 颜色" 🎞️ \
         😊 🌓 🧴 🎚️ 原图
@@ -299,7 +299,7 @@ json.dump(m, open(p, 'w'), ensure_ascii=False)"
     order st.comp "studio: light folder and frequency separation, observation folders on top" "🔍 观察组 · 黑白" "🔍 观察组 · 颜色" 🌓 🎚️ 原图
     inside st.comp "studio's light folder: the dual curves over the neutral gray" 🌓 ☀️ 🌑 🩶
     build --comp d.comp --preset dr5 --without grain > /dev/null 2>&1; want 1 $? "dr5 on an existing project is refused"
-    build --init "$PHOTO" --comp day.comp --preset daily > day.log 2>&1; want 0 $? "daily on a photo"
+    build --init "$PHOTO" --comp day.comp --preset daily --delicious-skin auto > day.log 2>&1; want 0 $? "daily on a photo"
     order day.comp "daily: skin and light folders, the observation folders on top" "🔍 观察组 · 黑白" "🔍 观察组 · 颜色" 🌓 🧴 原图
     inside day.comp "...the neutral gray in the light folder" 🌓 🩶
     inside day.comp "...the smoothing in the skin folder" 🧴 🔥
@@ -401,6 +401,70 @@ print(f"  {'ok' if ok else 'BAD'}: frequency separation sized to the face: 1.5x 
 print(f"  {'ok' if sigma['noface'][1] == '按分辨率' and sigma['manual'] == (4.0, '手动') else 'BAD'}: "
       "by the resolution without a face; --blur-radius as given")
 EOF
+    # Another radius on a pair no one has worked on makes it again in place; the same one, or hand work on it, leaves it.
+    pair() {  # pair <project>: the low layer's name, both ids, and whether low + 2 * high - 255 is still the photo
+        "$PY" - "$S" "$1" <<'EOF'
+import json, sys, numpy as np
+from PIL import Image
+sys.argv = [sys.argv[1]] + sys.argv[2:]; sys.path.insert(0, __import__("os").path.dirname(sys.argv[0]))
+import retouch_builder as rb
+p = rb.Project.open(sys.argv[1]); low, high = p.frequency_pair()
+planes = [np.asarray(Image.open(p.file_path(r["imageFile"])).convert("RGB")).astype(int) for r in (low, high)]
+error = np.abs(planes[0] + 2 * planes[1] - 255 - p.base_rgb().astype(int)).max()
+print(low["name"], low["id"], high["id"], error)
+EOF
+    }
+    before=$(pair fs_manual.comp)
+    build --comp fs_manual.comp --freq-sep --blur-radius 7 --no-checks > fsr.log 2>&1; want 0 $? "--blur-radius 7 on a pair made at 4"
+    after=$(pair fs_manual.comp)
+    "$PY" -c "
+import sys; b, a = sys.argv[1].rsplit(' ', 3), sys.argv[2].rsplit(' ', 3)
+ok = 'σ=7px · 手动' in a[0] and b[1:3] == a[1:3] and int(a[3]) <= 1
+print(f'  {\"ok\" if ok else \"BAD\"}: ...made again at 7 in place, the same layers, still the photo together '
+      f'({a[0][-22:]}, off by {a[3]})')" "$before" "$after"
+    build --comp fs_manual.comp --freq-sep --blur-radius 7 --no-checks > fsr2.log 2>&1
+    has "...the same radius again: skipped" grep -m1 "SKIP.*already σ=7px" fsr2.log
+    build --comp fs_manual.comp --freq-sep --blur-radius auto --no-checks > fsr3.log 2>&1
+    has "...auto: back to the face's width" grep -m1 "低频.*按脸宽.*(重做" fsr3.log
+    build --comp fs_manual.comp --freq-sep --blur-radius auto --no-checks > fsr4.log 2>&1
+    has "...auto on a pair sized by the face: skipped, not measured again" grep -m1 "SKIP.*already sized automatically" fsr4.log
+    build --comp fs_manual.comp --freq-sep --no-checks > fsr5.log 2>&1
+    has "...no radius given: skipped as before" grep -m1 "SKIP.*already sits above the photo" fsr5.log
+    "$PY" - <<'EOF'
+import json, cv2
+m = json.load(open("fs_manual.comp/manifest.json")); high = next(l for l in m["layers"] if l["name"].startswith("高频"))
+path = f"fs_manual.comp/images/{high['imageFile']}"; px = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+px[1500:1506, 1300:1306, :3] = 128  # one small dab of the clone stamp
+cv2.imwrite(path, px)
+EOF
+    cp fs_manual.comp/manifest.json fsr_before.json; ls -l fs_manual.comp/images > fsr_before.txt
+    build --comp fs_manual.comp --freq-sep --blur-radius 9 --no-checks > fsr6.log 2>&1; want 0 $? "--blur-radius 9 after a dab on the high layer"
+    has "...says the pair was worked on and keeps it" grep -m1 "WARN.*has been worked on" fsr6.log
+    if cmp -s fsr_before.json fs_manual.comp/manifest.json && ls -l fs_manual.comp/images | cmp -s - fsr_before.txt; then
+        echo "  ok: ...nothing changed"; else echo "  BAD: the worked-on pair was changed"; fi
+    # --blur-radius sizes the frequency separation only: the smoothing is the same with or without it
+    build --init "$SMALL" --comp br0.comp --freq-sep --delicious-skin --no-checks > /dev/null 2>&1
+    build --init "$SMALL" --comp br1.comp --freq-sep --delicious-skin --blur-radius 12 --no-checks > /dev/null 2>&1
+    "$PY" - <<'EOF'
+import json, numpy as np
+from PIL import Image
+def smoothing(comp):
+    layer = next(l for l in json.load(open(f"{comp}/manifest.json"))["layers"] if l["name"].startswith("🔥"))
+    return layer["name"], np.asarray(Image.open(f"{comp}/images/{layer['imageFile']}").convert("RGB")).astype(int)
+(n0, a), (n1, b) = smoothing("br0.comp"), smoothing("br1.comp")
+print(f"  {'ok' if np.abs(a - b).max() == 0 else 'BAD'}: --blur-radius leaves the smoothing alone "
+      f"(max difference {np.abs(a - b).max()})")
+print(f"  {'ok' if n0.startswith('🔥✋') and '黑蒙版' in n0 else 'BAD'}: --delicious-skin alone brushes it on by hand: {n0[:24]}")
+EOF
+    build --init "$SMALL" --comp dd.comp --preset daily --no-checks > dd.log 2>&1
+    has "the daily preset's smoothing is brushed on by hand too" grep -m1 "+ 🔥✋.*黑蒙版" dd.log
+    build --comp dd.comp --delicious-skin auto --no-checks > /dev/null 2>&1
+    build --comp dd.comp --preset daily --no-checks > dd2.log 2>&1
+    "$PY" -c "
+import json; names = [l['name'] for l in json.load(open('dd.comp/manifest.json'))['layers'] if l['name'].startswith('🔥')]
+print(f'  {\"ok\" if len(names) == 2 else \"BAD\"}: ...with both kinds there, daily re-makes one, adding none '
+      f'({len(names)} smoothing layers)')"
+    has "...the hand-brushed one, the default" grep -m1 "~ 🔥✋.*重做" dd2.log
     "$PY" "$HERE/heal_eval.py" make "$PHOTO" strong.jpg strong.json strong > /dev/null
     build --init strong.jpg --comp observe.comp --inspection --no-checks > /dev/null 2>&1; want 0 $? "--inspection"
     "$PY" -c "
@@ -453,7 +517,7 @@ EOF
 }
 
 suite_folders() {  # projects from before the folders, a hidden folder, and folders not changing the picture
-    build --init "$PHOTO" --comp flat.comp --preset dr5 --look film --glow halation --no-checks \
+    build --init "$PHOTO" --comp flat.comp --preset dr5 --delicious-skin auto --look film --glow halation --no-checks \
         > /dev/null 2>&1; want 0 $? "a project with every kind of group"
     "$PY" "$S" --comp flat.comp --render foldered.png > /dev/null 2>&1
     flatten flat.comp
@@ -486,10 +550,10 @@ EOF
     build --comp flat.comp --delicious-skin manual --no-checks > /dev/null 2>&1
     order flat.comp "...a new skin folder on top of the old loose skin layers" 🧴 🌗 🔥 高频 低频 原图
     inside flat.comp "...with the new manual smoothing layer" 🧴 🔥
-    build --comp flat.comp --delicious-skin --no-checks > remake.log 2>&1
+    build --comp flat.comp --delicious-skin auto --no-checks > remake.log 2>&1
     has "...an automatic one again remakes the old loose layer in place" grep -m1 "重做 · 保留蒙版" remake.log
     inside flat.comp "...so the folder still holds the manual one alone" 🧴 🔥
-    build --comp flat.comp --delicious-skin --engine guided --no-checks > remake2.log 2>&1
+    build --comp flat.comp --delicious-skin auto --engine guided --no-checks > remake2.log 2>&1
     has "...a new engine on the next run: the same layer, renamed" grep -m1 "保边磨皮 · 导向滤波.*(重做" remake2.log
     build --comp flat.comp --freq-sep > again.log 2>&1; want 0 $? "frequency separation once more"
     has "...skipped: the loose pair is found" grep -m1 SKIP again.log
@@ -586,7 +650,7 @@ error = np.abs(rebuilt - base16[..., :3]).max() / 257
 print(f"  {'ok' if low.dtype == np.uint16 and error < 0.05 else 'BAD'}: a 16-bit frequency-separation pair that rebuilds "
       f"it (within {error:.3f} levels)")
 EOF
-    build --comp t16.comp --delicious-skin --sculpt --render > t16more.log 2>&1; want 0 $? "smoothing and sculpt on it, rendered"
+    build --comp t16.comp --delicious-skin auto --sculpt --render > t16more.log 2>&1; want 0 $? "smoothing and sculpt on it, rendered"
     deep_smoothing() {  # deep_smoothing <label>: the smoothing layer of t16.comp is still 16-bit, with real precision
         "$PY" - "$1" <<'EOF'
 import json, sys, numpy as np, cv2
@@ -613,7 +677,7 @@ EOF
 }
 
 suite_refresh() {  # --refresh: the snapshot layers recomputed in place, after manual work under them
-    build --init "$PHOTO" --comp r.comp --8bit --freq-sep --delicious-skin --sculpt --eyes --dual-curves --no-checks > /dev/null 2>&1
+    build --init "$PHOTO" --comp r.comp --8bit --freq-sep --delicious-skin auto --sculpt --eyes --dual-curves --no-checks > /dev/null 2>&1
     want 0 $? "a format-11 project with the layers --refresh recomputes (the pixel eyes), and ones it leaves alone"
     cp -R r.comp r0.comp
     build --comp r.comp --render r0.png > /dev/null 2>&1

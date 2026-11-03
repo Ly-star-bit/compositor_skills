@@ -23,17 +23,18 @@ enum LogicTests {
         print("== command line")
         var settings = RetouchSettings()
         expect(Arguments.command(for: job, input: photo, project: project, settings: settings),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily"] + tail, "the defaults: 常用, rendered")
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual"] + tail,
+               "the defaults: 常用 with the smoothing brushed on (named, so the script's own default never decides), rendered")
         expect(Arguments.command(for: existing, input: project, project: project, settings: settings),
-               ["--comp", "/shoot/Anna.comp", "--preset", "daily"] + tail, "常用 goes on a project as the preset itself")
+               ["--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual"] + tail, "常用 goes on a project as the preset itself")
         settings.preset = .none
         settings.modules = ["eyes", "delicious-skin", "neutral-gray", "freq-sep"]
         expect(Arguments.command(for: job, input: photo, project: project, settings: settings),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--delicious-skin", "--freq-sep", "--neutral-gray", "--eyes"] + tail,
-               "modules in the inspector's order")
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--delicious-skin", "manual", "--freq-sep", "--neutral-gray", "--eyes", "--blur-radius", "auto"] + tail,
+               "modules in the inspector's order, the frequency separation's radius after them")
         settings = RetouchSettings(preset: .studio, strength: 0.7, look: .coolFair, render: false, checks: false)
         expect(Arguments.command(for: job, input: photo, project: project, settings: settings),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--strength", "0.70",
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--blur-radius", "auto", "--strength", "0.70",
                 "--look", "cool-fair", "--no-checks", "--progress"],
                "strength, look, no render, no checks")
         settings.strength = 1.0000001
@@ -41,7 +42,7 @@ enum LogicTests {
                "strength 1 is left out")
         var textured = RetouchSettings(texture: .soft)
         expect(Arguments.command(for: job, input: photo, project: project, settings: textured),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--texture", "soft"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual", "--texture", "soft"] + tail,
                "a softer skin texture")
         textured.set("delicious-skin", false)
         expect(Arguments.command(for: job, input: photo, project: project, settings: textured).contains("--texture"), false,
@@ -49,36 +50,57 @@ enum LogicTests {
         expect(Arguments.command(for: job, input: photo, project: project, settings: RetouchSettings(texture: .natural))
                .contains("--texture"), false, "natural is the script's default, left out")
 
-        print("== 手动刷出 (DR5's manual smoothing)")
-        var manual = RetouchSettings(smoothingMask: .manual)
-        expect(Arguments.command(for: job, input: photo, project: project, settings: manual),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual"] + tail,
+        print("== 磨皮方式: 手动刷出 by default, 自动蒙版 on request")
+        expect(RetouchSettings().smoothingMask, .manual, "the smoothing is brushed on by hand by default, as in Photoshop")
+        expect(SmoothingMask.allCases, [.manual, .auto], "...and its chip comes first")
+        var automatic = RetouchSettings(smoothingMask: .auto)
+        expect(Arguments.command(for: job, input: photo, project: project, settings: automatic),
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "auto"] + tail,
                "常用 on a photo: the preset plus the smoothing named with its value")
-        manual.preset = .dr5
-        expect(Arguments.command(for: existing, input: project, project: project, settings: manual),
-               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "manual", "--freq-sep", "--dual-curves", "--inspection",
-                "--sculpt", "--eyes", "--grain"] + tail,
+        automatic.preset = .dr5
+        expect(Arguments.command(for: existing, input: project, project: project, settings: automatic),
+               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "auto", "--freq-sep", "--dual-curves", "--inspection",
+                "--sculpt", "--eyes", "--grain", "--blur-radius", "auto"] + tail,
                "DR5 on a project: module by module, the smoothing with its value")
-        manual.preset = .none
-        manual.modules = ["delicious-skin", "neutral-gray"]
-        expect(Arguments.command(for: existing, input: project, project: project, settings: manual),
-               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "manual", "--neutral-gray"] + tail, "自选: the same")
-        expect(Arguments.summary(manual), "自选 · 2 项 · 手动刷出", "the summary says so")
-        manual.set("delicious-skin", false)
-        expect(Arguments.command(for: existing, input: project, project: project, settings: manual),
+        automatic.preset = .none
+        automatic.modules = ["delicious-skin", "neutral-gray"]
+        expect(Arguments.command(for: existing, input: project, project: project, settings: automatic),
+               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "auto", "--neutral-gray"] + tail, "自选: the same")
+        expect(Arguments.summary(automatic), "自选 · 2 项 · 自动蒙版", "the summary names the mask when it isn't the default")
+        expect(Arguments.summary(RetouchSettings(preset: .none, modules: ["delicious-skin"])), "自选 · 1 项",
+               "...and not when it is")
+        automatic.set("delicious-skin", false)
+        expect(Arguments.command(for: existing, input: project, project: project, settings: automatic),
                ["--comp", "/shoot/Anna.comp", "--neutral-gray"] + tail, "...and nothing about it when the smoothing is off")
-        expect(Arguments.summary(manual), "自选 · 1 项", "nor in the summary")
-        var studioManual = RetouchSettings(preset: .studio, smoothingMask: .manual)
-        expect(Arguments.command(for: job, input: photo, project: project, settings: studioManual),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio"] + tail,
+        expect(Arguments.summary(automatic), "自选 · 1 项", "nor in the summary")
+        var studioAuto = RetouchSettings(preset: .studio, smoothingMask: .auto)
+        expect(Arguments.command(for: job, input: photo, project: project, settings: studioAuto),
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--blur-radius", "auto"] + tail,
                "a preset without the smoothing: the mask choice changes nothing")
-        studioManual.set("delicious-skin", true)
-        expect(Arguments.command(for: job, input: photo, project: project, settings: studioManual),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--delicious-skin", "manual"] + tail,
+        studioAuto.set("delicious-skin", true)
+        expect(Arguments.command(for: job, input: photo, project: project, settings: studioAuto),
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--delicious-skin", "auto", "--blur-radius", "auto"] + tail,
                "...until the smoothing is switched on beside it")
 
+        print("== 高低频 radius")
+        var radius = RetouchSettings(preset: .studio)
+        expect(radius.freqSepAuto, true, "sized to the face by default")
+        radius.freqSepAuto = false
+        radius.freqSepRadius = 8.5
+        expect(Arguments.command(for: existing, input: project, project: project, settings: radius),
+               ["--comp", "/shoot/Anna.comp", "--freq-sep", "--neutral-gray", "--dual-curves", "--inspection", "--blur-radius", "8.5"] + tail,
+               "a radius picked by hand goes with the frequency separation")
+        expect(Arguments.summary(radius), "影棚 · 4 项 · 高低频 8.5px", "...and the summary names it")
+        radius.freqSepRadius = 8
+        expect(Arguments.command(for: job, input: photo, project: project, settings: radius).suffix(4),
+               ["--blur-radius", "8", "--render", "--progress"], "whole pixels without a decimal point")
+        radius.set("freq-sep", false)
+        expect(Arguments.command(for: job, input: photo, project: project, settings: radius).contains("--blur-radius"), false,
+               "no radius without the frequency separation")
+        expect(Arguments.summary(radius), "影棚（已调整） · 3 项", "nor in the summary")
+
         expect(Arguments.command(for: existing, input: project, project: project, settings: RetouchSettings(preset: .none, modules: ["freq-sep", "delicious-skin"])),
-               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "--freq-sep"] + tail, "an existing project: --comp only")
+               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "manual", "--freq-sep", "--blur-radius", "auto"] + tail, "an existing project: --comp only")
         var refresh = existing
         refresh.refresh = true
         expect(Arguments.command(for: refresh, input: project, project: project,
@@ -89,13 +111,13 @@ enum LogicTests {
                ["--comp", "/shoot/Anna.comp", "--refresh", "--no-checks", "--progress"], "重算 in Compositor: no render")
         print("== skin strength")
         expect(Arguments.command(for: job, input: photo, project: project, settings: RetouchSettings(skinStrength: .light)),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--skin-strength", "0.60"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual", "--skin-strength", "0.60"] + tail,
                "轻: the smoothing's own strength")
         expect(Arguments.command(for: job, input: photo, project: project, settings: RetouchSettings(strength: 0.8)),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--strength", "0.80", "--skin-strength", "1.00"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual", "--strength", "0.80", "--skin-strength", "1.00"] + tail,
                "the slider pins the smoothing at 中, so it only moves the glow and the grade")
         expect(Arguments.command(for: job, input: photo, project: project, settings: RetouchSettings(preset: .studio, skinStrength: .strong)),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "studio", "--blur-radius", "auto"] + tail,
                "no smoothing, no skin strength")
         expect(Arguments.summary(RetouchSettings(skinStrength: .strong)), "常用 · 3 项 · 磨皮重", "the summary names it")
         expect(SkinStrength.allCases.map(\.value), [0.6, 1.0, 1.15], "轻 中 重 as the script's --skin-strength")
@@ -107,7 +129,7 @@ enum LogicTests {
         custom.set("dual-curves", true)
         expect(custom.isCustomized && !custom.isOn("inspection") && custom.isOn("dual-curves"), true, "any switch can change")
         expect(Arguments.command(for: job, input: photo, project: project, settings: custom),
-               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--dual-curves", "--without", "inspection"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--comp", "/shoot/Anna.comp", "--preset", "daily", "--delicious-skin", "manual", "--dual-curves", "--without", "inspection"] + tail,
                "changes ride on the preset: added by name, the preset's own left out with --without")
         expect(Arguments.summary(custom), "常用（已调整） · 3 项", "the summary says it was changed")
         custom.set("inspection", true)
@@ -125,10 +147,10 @@ enum LogicTests {
         dr5OnProject.set("sculpt", false)
         expect(Arguments.problem(with: dr5OnProject, for: existing), nil, "DR5 can go on a project")
         expect(Arguments.command(for: existing, input: project, project: project, settings: dr5OnProject),
-               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "--freq-sep", "--dual-curves", "--inspection", "--eyes",
-                "--grain", "--render", "--progress"], "on a project, DR5's modules go one by one")
+               ["--comp", "/shoot/Anna.comp", "--delicious-skin", "manual", "--freq-sep", "--dual-curves", "--inspection", "--eyes",
+                "--grain", "--blur-radius", "auto", "--render", "--progress"], "on a project, DR5's modules go one by one")
         expect(Arguments.command(for: existing, input: project, project: project, settings: RetouchSettings(preset: .studio), inCompositor: true),
-               ["--comp", "/shoot/Anna.comp", "--freq-sep", "--neutral-gray", "--dual-curves", "--inspection", "--progress"],
+               ["--comp", "/shoot/Anna.comp", "--freq-sep", "--neutral-gray", "--dual-curves", "--inspection", "--blur-radius", "auto", "--progress"],
                "open in Compositor: no preview render; 影棚 on a project, module by module")
 
         let heic = URL(fileURLWithPath: "/tmp/X.tif")
@@ -249,12 +271,21 @@ enum LogicTests {
         print("== remembered settings")
         let keptFolder = FileManager.default.temporaryDirectory.appendingPathComponent("remember-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: keptFolder, withIntermediateDirectories: true)
-        var kept = RetouchSettings(preset: .dr5, modules: ["neutral-gray"], removed: ["grain"], smoothingMask: .manual,
-                                   skinStrength: .light, strength: 0.7, texture: .soft, look: .film, glow: .mist,
+        var kept = RetouchSettings(preset: .dr5, modules: ["neutral-gray"], removed: ["grain"], smoothingMask: .auto,
+                                   skinStrength: .light, strength: 0.7, texture: .soft, freqSepAuto: false,
+                                   freqSepRadius: 8.5, look: .film, glow: .mist,
                                    glowColorMode: .twoTone, glowColor: RGB.named[1].1,  // #RRGGBB keeps n/255 exactly
                                    glowOuterColor: RGB.named[4].1, render: false, checks: false, output: .folder(keptFolder))
         expect(RetouchSettings(dictionary: kept.asDictionary), kept, "everything survives the round trip")
         expect(RetouchSettings(dictionary: [:]), RetouchSettings(), "nothing kept: the defaults")
+        expect(RetouchSettings(dictionary: ["smoothingMask": "auto", "skinStrength": "light"]).smoothingMask, .manual,
+               "自动蒙版 saved before the smoothing was brushed on by default was that default, not a choice: now 手动")
+        expect(RetouchSettings(dictionary: ["smoothingMask": "auto", "skinStrength": "light"]).skinStrength, .light,
+               "...the rest of those settings still read")
+        expect(RetouchSettings(dictionary: ["smoothingMask": "auto", "version": 2]).smoothingMask, .auto,
+               "自动蒙版 picked since then is kept")
+        expect(RetouchSettings(dictionary: ["freqSepRadius": 400.0, "version": 2]).freqSepRadius, RetouchSettings.defaultFreqSepRadius,
+               "a radius out of range stays at the default")
         expect(RetouchSettings(dictionary: kept.asDictionary, folderExists: { _ in false }).output, .besidePhoto,
                "an output folder that is gone falls back to beside the photo")
         let stale: [String: Any] = ["preset": "auto", "modules": ["heal", "eyes", "folds"], "removed": ["sculpt"],
@@ -460,13 +491,13 @@ enum LogicTests {
         let forPhotoCraft = RetouchJob(source: photo, target: .photocraft)
         let toDocument = RetouchJob(source: document, target: .photocraft)
         expect(Arguments.command(for: forPhotoCraft, input: photo, project: document, settings: RetouchSettings()),
-               ["--init", "/shoot/Anna.jpg", "--pcraft", "/shoot/Anna.pcraft", "--preset", "daily"] + tail,
+               ["--init", "/shoot/Anna.jpg", "--pcraft", "/shoot/Anna.pcraft", "--preset", "daily", "--delicious-skin", "manual"] + tail,
                "a photo for PhotoCraft: the same options, --pcraft for --comp")
         var onDocument = RetouchSettings()
         onDocument.choose(.dr5)
         expect(Arguments.command(for: toDocument, input: document, project: document, settings: onDocument),
-               ["--pcraft", "/shoot/Anna.pcraft", "--delicious-skin", "--freq-sep", "--dual-curves", "--inspection",
-                "--sculpt", "--eyes", "--grain"] + tail, "DR5 on an existing document goes module by module, as on a project")
+               ["--pcraft", "/shoot/Anna.pcraft", "--delicious-skin", "manual", "--freq-sep", "--dual-curves", "--inspection",
+                "--sculpt", "--eyes", "--grain", "--blur-radius", "auto"] + tail, "DR5 on an existing document goes module by module, as on a project")
         var recompute = toDocument
         recompute.refresh = true
         expect(Arguments.command(for: recompute, input: document, project: document, settings: RetouchSettings()),
