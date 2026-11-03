@@ -215,14 +215,71 @@ enum Compositor {
 }
 
 /// PhotoCraft, the open-source editor the .pcraft documents are for. Unlike Compositor it doesn't watch its files, so
-/// a document changed while open there is reloaded with File › Revert; and it is only ever opened on the user's click.
+/// a document changed while open there is reloaded with File › Revert, unless PhotoCraft was started linked (below);
+/// and it is only ever opened or started on the user's click.
 enum PhotoCraftApp {
     static let bundleIdentifier = "ai.storyteller.photocraft"
     static let cliVersion = "0.19.0"  // photocraft-retouch/scripts/photocraft.py VERSION
 
+    // MARK: the link: PhotoCraft started with its control port, so pcraft_retouch.py saves a document open there
+    // before adding to it and loads it again after (photocraft.py AppLink; it reads linkFile)
+
+    static let linkPort = 47_917
+    static var linkFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("compositor-retouch")
+    }
+    static var linkFile: URL { linkFolder.appendingPathComponent("photocraft-link.json") }
+    /// PhotoCraft writes a fresh token here the first time (readable by this user only) and reuses it after.
+    static var tokenFile: URL { linkFolder.appendingPathComponent("photocraft-control.token") }
+
+    /// What the script reads from linkFile: the port, the token's file, and the folder automation may use.
+    static func linkSettings(root: URL) -> [String: Any] {
+        ["port": linkPort, "tokenFile": tokenFile.path, "root": root.path]
+    }
+
+    /// PhotoCraft's own launch options for the link: its control port on this Mac only, the token file, and `root`
+    /// (the home folder) as the one folder its automation reads and writes, where the documents are.
+    static func linkArguments(root: URL) -> [String] {
+        ["--control", String(linkPort), "--control-token-file", tokenFile.path,
+         "--automation-read-root", root.path, "--automation-write-root", root.path]
+    }
+
+    static var isRunning: Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty }
+
+    /// Starts PhotoCraft linked, after writing linkFile. A PhotoCraft already running keeps how it was started, so this
+    /// is for when it isn't.
+    static func startLinked(root: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        guard let app = app(toOpen: URL(fileURLWithPath: "/document.pcraft")) else { throw CocoaError(.fileNoSuchFile) }
+        try FileManager.default.createDirectory(at: linkFolder, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: linkSettings(root: root), options: [.prettyPrinted, .sortedKeys])
+            .write(to: linkFile, options: .atomic)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = linkArguments(root: root)
+        NSWorkspace.shared.openApplication(at: app, configuration: configuration)
+    }
+
+    /// Whether something accepts connections on the link's port now: PhotoCraft, started linked.
+    static func isListening(port: Int = linkPort) -> Bool {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard socket >= 0 else { return false }
+        defer { close(socket) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        } == 0
+    }
+
+    /// For the snapshot tool, which draws the card as on a Mac with PhotoCraft.
+    nonisolated(unsafe) static var appOverride: URL?
+
     /// The app that opens `document`, when it is PhotoCraft.
     static func app(toOpen document: URL) -> URL? {
-        [NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier),
+        if let appOverride { return appOverride }
+        return [NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier),
          NSWorkspace.shared.urlForApplication(toOpen: document)]
             .compactMap { $0 }.first { $0.lastPathComponent.localizedCaseInsensitiveContains("photocraft") }
     }

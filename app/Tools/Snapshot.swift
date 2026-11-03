@@ -203,6 +203,9 @@ enum Snapshot {
         let craft = Studio(environment: environment(.ready))
         craft.target = .photocraft
         shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), to: out.appendingPathComponent("10-photocraft-empty.png"))
+        PhotoCraftApp.appOverride = URL(fileURLWithPath: "/System/Applications/Preview.app")  // as with PhotoCraft installed
+        shoot(TabbedColumns(studio: craft), size: NSSize(width: 1360, height: 900), to: out.appendingPathComponent("10a-photocraft-link.png"))
+        PhotoCraftApp.appOverride = nil
         let documents = (finished.flatMap { try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? [])
             .filter { $0.pathExtension == "pcraft" }.sorted { $0.path < $1.path }
         if let document = documents.first {

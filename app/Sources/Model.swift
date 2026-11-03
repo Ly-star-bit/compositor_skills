@@ -388,6 +388,8 @@ struct RetouchJob: Identifiable, Equatable {
     var retried = false              // run once more after Compositor saved the project mid-run (never twice)
 
     var isProject: Bool { Target.of(document: source) != nil }
+    /// The linked PhotoCraft had the document open and loaded it again by itself (the script says so).
+    var reloadedInPhotoCraft: Bool { target == .photocraft && log.contains("loaded again with the new layers") }
     var name: String { source.deletingPathExtension().lastPathComponent }
     /// What stands for it in pictures: its render, else the photo; a .pcraft, which shows nothing by itself, by the
     /// render left beside it (when there is one).

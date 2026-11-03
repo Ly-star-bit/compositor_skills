@@ -487,6 +487,23 @@ enum LogicTests {
         }
 
         print("== PhotoCraft")
+        let home = URL(fileURLWithPath: "/Users/anna", isDirectory: true)
+        let link = PhotoCraftApp.linkSettings(root: home)
+        expect(Set(link.keys), ["port", "tokenFile", "root"], "the link file has what photocraft.py link_settings reads")
+        expect(link["port"] as? Int == PhotoCraftApp.linkPort && link["root"] as? String == "/Users/anna"
+               && (link["tokenFile"] as? String)?.hasSuffix("compositor-retouch/photocraft-control.token") == true, true,
+               "...the port, the home folder and the token beside it in Application Support")
+        expect(PhotoCraftApp.linkFile.path.hasSuffix("Application Support/compositor-retouch/photocraft-link.json"), true,
+               "...where photocraft.py LINK_FILE looks")
+        expect(PhotoCraftApp.linkArguments(root: home),
+               ["--control", "47917", "--control-token-file", PhotoCraftApp.tokenFile.path,
+                "--automation-read-root", "/Users/anna", "--automation-write-root", "/Users/anna"],
+               "PhotoCraft starts linked with its control port, the token file, and the home folder for automation")
+        let probe = try? Socket.listen()
+        expect(probe.map { PhotoCraftApp.isListening(port: $0.port) } ?? false, true, "a port something listens on reads as linked")
+        let port = probe?.port ?? 1
+        probe?.close()
+        expect(PhotoCraftApp.isListening(port: port), false, "...and once closed, not")
         let document = URL(fileURLWithPath: "/shoot/Anna.pcraft")
         let forPhotoCraft = RetouchJob(source: photo, target: .photocraft)
         let toDocument = RetouchJob(source: document, target: .photocraft)
@@ -507,6 +524,10 @@ enum LogicTests {
         expect(documentName(), "Anna.pcraft", "a new document beside the photo")
         takenDocuments = ["/shoot/Anna.pcraft"]
         expect(documentName(), "Anna 2.pcraft", "a taken document name gets a number")
+        var reloaded = toDocument
+        reloaded.log = "3.1 [OK] PhotoCraft: Anna.pcraft loaded again with the new layers (its History starts over)\n"
+        expect([toDocument.reloadedInPhotoCraft, reloaded.reloadedInPhotoCraft], [false, true],
+               "the linked PhotoCraft loading the document again by itself: no F12 to ask for")
         expect(RetouchJob.accepts(document) && toDocument.isProject, true, ".pcraft documents are accepted, as documents")
         expect([Target.of(document: document), Target.of(document: project), Target.of(document: photo)], [.photocraft, .compositor, nil],
                "the editor a file belongs to")
@@ -553,4 +574,30 @@ enum LogicTests {
         print(failures == 0 ? "PASS logic" : "FAIL logic: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
+}
+
+
+/// A listening TCP socket on 127.0.0.1 at a free port, for PhotoCraftApp.isListening.
+struct Socket {
+    let descriptor: Int32
+    let port: Int
+
+    static func listen() throws -> Socket {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard fd >= 0, bound == 0, Darwin.listen(fd, 1) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        return Socket(descriptor: fd, port: Int(UInt16(bigEndian: address.sin_port)))
+    }
+
+    func close() { Darwin.close(descriptor) }
 }

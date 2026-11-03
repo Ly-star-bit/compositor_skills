@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -23,10 +24,12 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.realpath(__file__))  # real path: the skill may be installed as a symlink
 sys.path.insert(0, HERE)
-from photocraft import Serve, ServeError, find_cli  # noqa: E402
+from photocraft import LINK_FILE, Serve, ServeError, connect_app, find_cli, outside_root, refused_name  # noqa: E402
 
 SKILL_DIR = os.path.dirname(HERE)
 BUILDER = os.environ.get("RETOUCH_BUILDER") or os.path.join(os.path.dirname(SKILL_DIR), "scripts", "retouch_builder.py")
+# The documents whose PhotoCraft tab is older than the file (see stale_tabs); tests keep theirs elsewhere.
+STALE_FILE = os.environ.get("PCRAFT_RETOUCH_STALE") or os.path.join(os.path.dirname(LINK_FILE), "photocraft-stale.json")
 
 # Which builder group (retouch_builder.GROUPS) each module's layers belong to.
 MODULE_GROUP = {"freq_sep": "freq_sep", "delicious_skin": "skin", "sculpt": "light", "neutral_gray": "light",
@@ -196,7 +199,11 @@ class Comp:
 def run_builder(photo, comp, flags, label):
     """retouch_builder.py --init `photo` into the scratch `comp`; its warnings pass through, its errors stop the run."""
     command = [sys.executable, BUILDER, "--init", photo, "--comp", comp, *flags]
-    result = subprocess.run(command, capture_output=True, text=True)
+    # Its layers are read once here and deleted: on the Mac's own disk written uncompressed (but the smoothing, kept
+    # in the document), several times faster; elsewhere (an external or network disk) as usual, a fifth the size.
+    local = os.stat(os.path.dirname(comp)).st_dev == os.stat(tempfile.gettempdir()).st_dev
+    result = subprocess.run(command, capture_output=True, text=True,
+                            env=dict(os.environ, RETOUCH_PNG_LEVEL="0" if local else ""))
     for line in result.stdout.splitlines():
         if line.startswith("[WARN] "):
             warn(line[7:], once=True)
@@ -774,12 +781,23 @@ class Run:
         return [n for n in self.doc.flat(top or self.doc.tree()) if n.is_smart and set(n.filters) & STAMPED_FILTERS
                 and "filter.noise.addNoise" not in n.filters]
 
-    def restamp(self, skip):
+    def restamp(self, skip, changed=None):
         """Stamped Smart Objects (sculpt, eye brilliance, soft-focus glow) are snapshots of what was below them:
-        give each, bottom to top, what is below it now. Their smart filters re-run on the new contents."""
-        for node in self.stamped():
+        give each, bottom to top, what is below it now; with `changed` (layer ids), only those with one of these
+        below them, each then changed too for the ones above it. Their smart filters re-run on the new contents."""
+        top = self.doc.tree()
+        order = [n.id for n in self.doc.flat(top)]  # drawing order: a folder comes before what is in it
+        for node in self.stamped(top):
             if node.id in skip:
                 continue
+            if changed is not None:
+                folders, parent = set(), node.parent  # the ones it is in come before it but aren't below it
+                while parent is not None:
+                    folders.add(parent.id)
+                    parent = parent.parent
+                if not (set(order[:order.index(node.id)]) - folders) & changed:
+                    continue  # its snapshot is still what is below it
+                changed.add(node.id)
             with self.doc.only_below(node.id, include_self=False):
                 base = os.path.join(self.staging, f"stamp-{node.id}.png")
                 self.doc.export(base)
@@ -793,12 +811,17 @@ class Run:
         if args.refresh:
             self.step(f"1/{len(steps)} refresh")
             self.refresh()
-        before = {n.id for n in self.stamped()}
+        before, redone = {n.id for n in self.stamped()}, len(self.redone)
         for number, key in enumerate(args.modules, len(steps) - len(args.modules) + 1):
             self.step(f"{number}/{len(steps)} {key}")
             self.add(key)
-        if self.added and before:
-            self.restamp({n for n in self.added} | {i for i, _ in self.redone if i not in before})
+        if self.added and before:  # the stamps with a layer added or made again below them
+            restamped = len(self.redone)
+            self.restamp({n for n in self.added} | {i for i, _ in self.redone if i not in before},
+                         changed=set(self.added) | {i for i, _ in self.redone[redone:]})
+            if len(self.redone) == restamped:
+                say("[NOTE] 骨相、眼神光、梦幻柔焦的盖印没有重做（新图层都在它们上面）；在 PhotoCraft 里改过它们下面的图层的话，"
+                    "跑一次 --refresh")
 
 
 def describe(node):
@@ -840,11 +863,180 @@ def clone(source, target):
         shutil.copy2(source, target)
 
 
+@contextmanager
+def held_stops():
+    """A Stop (SIGINT: Compositor 工具's stop button, ^C) held off for the block, and noted: Python runs a handler in
+    the main thread only, between two steps, where a blocked signal would still reach the serve reader threads and
+    stop the main thread at any step. What came, for the caller to act on."""
+    stops = []
+    before = signal.signal(signal.SIGINT, lambda *_: stops.append(True))
+    try:
+        yield stops
+    finally:
+        signal.signal(signal.SIGINT, before)
+
+
+def staging_name(dest):
+    """The name the scratch copies of `dest` are saved under: its own, as a document keeps the name it was saved as
+    and shows it, changed only as far as the engine needs (see photocraft.refused_name)."""
+    name = os.path.basename(dest)
+    if refused_name(name):
+        name = name.replace(":", "-").replace("\\", "-")
+        if refused_name(name):  # a device name: con.pcraft
+            stem, _, rest = name.partition(".")
+            name = f"{stem}_.{rest}"
+    return "document.pcraft" if refused_name(name) else name
+
+
+def file_stamp(path):
+    try:
+        s = os.stat(path)
+    except OSError:
+        return None
+    return [s.st_dev, s.st_ino, s.st_mtime_ns, s.st_size]
+
+
+def stale_tabs():
+    """{path: stamp} of the documents a run wrote while the linked PhotoCraft had a tab of them open that it couldn't
+    load again (mark_stale), left as that run wrote them: the tab is older than the file. One saved since, from
+    PhotoCraft or by another run, is done with."""
+    try:
+        with open(STALE_FILE, encoding="utf-8") as f:
+            marks = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {path: mark for path, mark in marks.items() if file_stamp(path) == mark} if isinstance(marks, dict) else {}
+
+
+def mark_stale(dest):
+    marks = dict(stale_tabs(), **{os.path.realpath(dest): file_stamp(dest)})
+    try:
+        os.makedirs(os.path.dirname(STALE_FILE), exist_ok=True)
+        with open(STALE_FILE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(marks, f, ensure_ascii=False)
+        os.replace(STALE_FILE + ".tmp", STALE_FILE)
+    except OSError as error:
+        warn(f"couldn't note that PhotoCraft's tab of {os.path.basename(dest)} is older than the file ({error}): "
+             "don't save it there (⌘S) before loading it again (F12)")
+
+
+def open_tab(app, path, name, then, contents):
+    """The tab the linked PhotoCraft has of the file `path` ({index, name, dirty, …}), or None. The run stops (`then`
+    says what it leaves) when the app can't say, when the document is open in more than one tab, and, with
+    `contents`, when a smart object's contents are open in a tab of their own: loading the document again would cut
+    them loose from it."""
+    try:
+        session = app.session()
+        tabs = app.tabs(path, session)
+        opened = app.contents_tabs(session) if tabs and contents else []
+    except ServeError as error:
+        raise Fail(f"PhotoCraft (linked) didn't list its open documents ({error}): {then}close any dialog open there, "
+                   "or wake the display (it answers while it draws), and run again") from error
+    if len(tabs) > 1:
+        raise Fail(f"PhotoCraft has {name} open in {len(tabs)} tabs: {then}close all but one there (the one furthest "
+                   "right is the newest) and run again")
+    if opened:
+        raise Fail(f"PhotoCraft has a smart object's contents (of this document or another) open in a tab of their "
+                   f"own ({', '.join(doc.get('name') or '?' for doc in opened)}): {then}close that tab there (its "
+                   "changes go back into their document) and run again")
+    return tabs[0] if tabs else None
+
+
+def linked_app(dest, args):
+    """Before the run, when the PhotoCraft app is linked (see photocraft.connect_app) and has the file `dest` open:
+    its unsaved changes there are saved first, so this run starts from them and loading the result again loses
+    nothing. Unless that tab is older than the file (stale_tabs): saving it would put back what the file had before
+    the run that wrote it. Whether the app has a tab of it."""
+    if not os.path.isfile(dest) or not (args.modules or args.refresh or args.init):
+        return False
+    app, why = connect_app()
+    if app is None:
+        if why:
+            say(f"[NOTE] PhotoCraft 联动没连上（{why}），照旧手动载入")
+        return False
+    name = os.path.basename(dest)
+    try:
+        outside = outside_root(dest, app.root)
+        doc = open_tab(app, dest, name, "", contents=not outside)
+        if doc is None:
+            return False
+        if not doc.get("dirty"):
+            if outside:
+                say(f"[NOTE] PhotoCraft 联动只管它能读写的文件夹里的文档（{outside}）：{name} 做完照旧在 PhotoCraft 里按 F12 载入")
+            return True
+        if file_stamp(dest) in stale_tabs().values():
+            raise Fail(f"PhotoCraft's {name} has unsaved changes but may be older than the file (a run wrote it "
+                       "while it was open there and couldn't load it again): saving it would undo that run. Load it in "
+                       "PhotoCraft (F12), make the changes again and run again. If it was loaded since (F12, or "
+                       "opened again), save it there (⌘S) and run again")
+        if outside:
+            raise Fail(f"PhotoCraft has {name} open with unsaved changes, and the link only saves documents in the "
+                       f"folder it was given ({outside}): save it there (⌘S) and run again")
+        if args.init:
+            raise Fail(f"PhotoCraft has {name} open with unsaved changes, and --init --force replaces the document: "
+                       "save or close it there first")
+        try:
+            app.save(doc)
+        except ServeError as error:
+            raise Fail(f"PhotoCraft has {name} open and it could not be saved there ({error}): save it (⌘S) and "
+                       "run again") from error
+        say(f"[OK] PhotoCraft: saved {doc.get('name') or name} first, with its unsaved changes")
+        return True
+    finally:
+        app.close()
+
+
+def app_before_write(dest, init, seen):
+    """Just before the new document replaces the file `dest`: the linked PhotoCraft app when it has a tab of it to
+    load it again in (reload_in_app), else None; and whether it has a tab of it. Changes made in that tab while this
+    ran stop the run, nothing written, as the file's being saved does; so does an app that had it open (`seen`) and
+    can't be asked again (one that has quit has no tabs left)."""
+    name = os.path.basename(dest)
+    app, why = connect_app()  # a new connection: the app drops one idle for 30 s, and building takes longer
+    if app is None:
+        if seen and why:
+            raise Fail(f"PhotoCraft had {name} open and the link couldn't reach it again ({why}): nothing written. "
+                       "Run it again")
+        return None, False
+    try:
+        outside = outside_root(dest, app.root)
+        doc = open_tab(app, dest, name, "nothing written. ", contents=not outside)
+        if doc and doc.get("dirty"):
+            raise Fail(f"{name} was changed in PhotoCraft while this ran: nothing written. "
+                       + ("Save or close it there and run it again" if init else "Run it again: those changes are "
+                          "saved there first"))
+    except BaseException:
+        app.close()
+        raise
+    if doc is None or outside:
+        app.close()
+        return None, doc is not None
+    return app, True
+
+
+def reload_in_app(app, dest):
+    """Load the new document again in the PhotoCraft tab app_before_write found: True when it did, False when it
+    couldn't (the tab is older than the file now: see mark_stale), None when there was no tab."""
+    if app is None:
+        return None
+    try:
+        if not app.reload(dest):
+            return None
+        say(f"[OK] PhotoCraft: {os.path.basename(dest)} loaded again with the new layers (its History starts over)")
+        return True
+    except ServeError as error:
+        warn(f"PhotoCraft didn't load {os.path.basename(dest)} again ({error})")
+        return False
+    finally:
+        app.close()
+
+
 def main(argv):
     started = time.time()
     RB = load_builder()
     args = parse_args(argv, RB)
-    dest = os.path.abspath(args.pcraft)
+    given = os.path.abspath(args.pcraft)  # where the render and check images go, beside what the caller named
+    dest = os.path.realpath(given)  # a link's own file: what PhotoCraft has open, and what is written
     if not dest.endswith(".pcraft"):
         raise Fail("--pcraft must name a .pcraft file")
     parent = os.path.dirname(dest)
@@ -864,24 +1056,33 @@ def main(argv):
         say("[NOTE] nothing to add: listing the document's layers")
 
     cli = find_cli(say, warn)
+    seen = linked_app(dest, args)  # PhotoCraft (linked) has it open
     staging = tempfile.mkdtemp(prefix=".pcraft-retouch-", dir=parent)  # the serve session's only folder
     serve = Serve(cli, staging)
-    run = Run(args, RB, dest, staging, serve)
+    run = Run(args, RB, given, staging, serve)
+    app, there, written, loaded = None, False, False, None
     try:
         if args.init:
             run.create()
         else:
             opened_as = os.stat(dest)
-            working = os.path.join(staging, "in.pcraft")
+            working = os.path.join(staging, "in", staging_name(dest))
+            os.mkdir(os.path.dirname(working))
             clone(dest, working)
             serve.call("doc.open", {"path": working})
             run.update()
         if run.changed:
-            out = os.path.join(staging, "out.pcraft")
+            out = os.path.join(staging, staging_name(dest))
             serve.call("doc.save", {"path": out})
             if not args.init and not same_file(opened_as, dest):
                 raise Fail(f"{dest} was saved (in PhotoCraft?) while this ran: nothing written. Run it again")
-            os.replace(out, dest)
+            app, there = app_before_write(dest, args.init, seen)
+            with held_stops() as stops:  # written or not, so what is said after is true
+                os.replace(out, dest)
+                written = True
+            if stops:
+                raise KeyboardInterrupt
+            loaded = reload_in_app(app, dest)
         top, lines = stack(run.doc)
         nodes = {n.id: n for n in Doc.flat(top)}
         for layer_id, how in run.redone:
@@ -895,7 +1096,7 @@ def main(argv):
                 say(f"[OK] + {describe(node)}")
         if args.render is not None:
             run.step("render")
-            target = os.path.abspath(args.render or os.path.splitext(dest)[0] + ".render.jpg")
+            target = os.path.abspath(args.render or os.path.splitext(given)[0] + ".render.jpg")
             flat = os.path.join(staging, "render.png")
             run.doc.export(flat)
             image = Image.open(flat)
@@ -912,16 +1113,28 @@ def main(argv):
         say("Stack, top to bottom:")
         for line in lines:
             say(line)
-        if run.changed and not args.init:
+        if run.changed and not loaded and (there or not args.init):
             say("[NOTE] 已在 PhotoCraft 里打开这个文档的话，按 F12（文件 › 恢复）载入新版本；先不要按 ⌘S，否则会盖掉这次的修改")
+    except BaseException as error:
+        if not written or isinstance(error, SystemExit):
+            raise
+        why = ("interrupted" if isinstance(error, KeyboardInterrupt) else f"{error}" if isinstance(error, (Fail, ServeError))
+               else f"{type(error).__name__}: {error}")
+        then = "PhotoCraft has loaded it again" if loaded else "if PhotoCraft has it open, F12 there loads it"
+        raise Fail(f"{why}, after {os.path.basename(dest)} was written with the new layers ({then})") from error
     finally:
-        serve.close()
-        keep = os.environ.get("PCRAFT_RETOUCH_KEEP")  # tests: keep the builder's scratch projects to compare with
-        if keep:
-            for name in os.listdir(staging):
-                if name.endswith(".comp"):
-                    shutil.copytree(os.path.join(staging, name), os.path.join(keep, name), dirs_exist_ok=True)
-        shutil.rmtree(staging, ignore_errors=True)
+        with held_stops():  # the clearing up runs to its end: a Stop now finds the run over
+            if app:
+                app.close()
+            if written and there and loaded is not True:  # PhotoCraft's tab of it is older than the file now
+                mark_stale(dest)
+            serve.close()
+            keep = os.environ.get("PCRAFT_RETOUCH_KEEP")  # tests: keep the builder's scratch projects to compare with
+            if keep:
+                for name in os.listdir(staging):
+                    if name.endswith(".comp"):
+                        shutil.copytree(os.path.join(staging, name), os.path.join(keep, name), dirs_exist_ok=True)
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -933,6 +1146,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         say("[Error] interrupted: the document is unchanged")
         sys.exit(1)
-    except Exception as error:  # noqa: BLE001 — keep the [Error] contract; the document is only replaced at the end
+    except Exception as error:  # noqa: BLE001 — keep the [Error] contract; main says when it stopped after writing
         say(f"[Error] {type(error).__name__}: {error} (the document is unchanged)")
         sys.exit(1)

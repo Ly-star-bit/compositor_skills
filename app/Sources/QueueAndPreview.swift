@@ -249,7 +249,10 @@ struct DetailView: View {
         let reload = job.target == .photocraft && job.status == .done  // PhotoCraft doesn't watch its files
         if problem != nil || reload || !job.warnings.isEmpty || !job.log.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                if reload {
+                if reload && job.reloadedInPhotoCraft {
+                    Label("PhotoCraft 已重新载入这个文档；它的历史记录从这里重新开始", systemImage: "link")
+                        .font(.system(size: 12, weight: .medium))
+                } else if reload {
                     Label(job.isProject ? "这个文档在 PhotoCraft 里开着的话，按 F12（文件 › 恢复）载入新版本；先别按 ⌘S"
                                         : "在 PhotoCraft 里打开它继续修；以后追加或重算前先在 PhotoCraft 里 ⌘S，做完按 F12 载入",
                           systemImage: "arrow.uturn.backward.circle")

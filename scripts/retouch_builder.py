@@ -102,6 +102,12 @@ MAX_SIDE = 30_000
 # Level 3 encodes several times faster than Pillow's default 6 for a few percent more bytes;
 # Compositor re-encodes the layers itself the next time the project is saved there.
 PNG_COMPRESS_LEVEL = 3
+# photocraft-retouch reads the layers once and deletes them, so it asks for none (0, several times faster still); a
+# smoothing layer, which it keeps inside the document as a Smart Object's PNG, stays at PNG_COMPRESS_LEVEL.
+try:
+    SCRATCH_PNG_LEVEL = min(9, max(0, int(os.environ.get("RETOUCH_PNG_LEVEL") or PNG_COMPRESS_LEVEL)))
+except ValueError:
+    SCRATCH_PNG_LEVEL = PNG_COMPRESS_LEVEL
 OBSERVATION_PREFIX = "🔍 观察组"
 GRAIN_PREFIX = "🎞️"
 GLOW_PREFIX = "✨"
@@ -1148,7 +1154,23 @@ def skin_color(rgb, faces, skin_tone, people=None):
     return distance, brightness
 
 
-def skin_mask(rgb, faces, people=None, parts=None):
+def skin_sample(shape, faces, skin_tone, people=None):
+    """Where skin_color samples the face's own skin, at the size it works at: all it reads of the skin-tone map and
+    the person matte, so calls alike here (and in photo and faces) come to the same."""
+    height, width = shape[:2]
+    factor = max(1, int(max(face[2] for face in faces) // 400))
+    if factor > 1:
+        size = (max(1, width // factor), max(1, height // factor))
+        faces = [scaled(face, 1.0 / factor) for face in faces]
+        skin_tone = cv2.resize(skin_tone, size, interpolation=cv2.INTER_NEAREST)
+        people = None if people is None else cv2.resize(people, size, interpolation=cv2.INTER_AREA)
+    sample = reference_zones(skin_tone.shape[:2], faces) & (skin_tone > 0) & (feature_mask(skin_tone.shape[:2], faces) == 0)
+    if people is not None:
+        sample &= people > 0.5
+    return sample
+
+
+def skin_mask(rgb, faces, people=None, parts=None, color=skin_color):
     """Skin mask, feathered: skin-toned (YCrCb), or matching the face's own skin color however much in shadow (see
     skin_color), minus dark features (brows, lashes, pupils, nostrils), confined to the face and neck when faces
     were found and to the people in the photo (`people`, Vision's person matte, 0-1) when there is a matte,
@@ -1161,7 +1183,7 @@ def skin_mask(rgb, faces, people=None, parts=None):
     skin[cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) < 45] = 0
     hair = None
     if faces:
-        distance, brightness = skin_color(rgb, faces, tone, people)
+        distance, brightness = color(rgb, faces, tone, people)
         # Within 3.5 deviations of the face's own color and not darker than a tenth of it: shadowed skin too.
         skin[(distance < 3.5) & (brightness > 0.1)] = 255
         # An ellipse anchored low on the face, reaching down over chin and neck.
@@ -2125,6 +2147,7 @@ class Project:
         self.use_parsing = True
         self._skin = None
         self._reach = None       # the skin plus the rest of the people's skin, for a smoothing brushed on by hand
+        self._skin_color = None  # skin_color's last answer, with what it was asked (see Project.skin_color)
         self._manifest_stamp = None  # manifest.json's (mtime, size) when opened: commit refuses to overwrite a newer one
         self._work = None        # what Compositor draws up to and including `_work_anchor` (RGB, 0-1)
         self._work_anchor = None
@@ -2335,7 +2358,10 @@ class Project:
             pool.shutdown(wait=True)
             self._ahead, self._top_up = {}, None
 
-    def _draw(self, canvas, record, by_id, quiet=False):
+    def _draw(self, canvas, record, by_id, quiet=False, window=None):
+        """`record` drawn over `canvas`: the whole document, or the part of it `window` (row and column slices) says."""
+        part = window or (slice(None), slice(None))
+        top, left = (window[0].start, window[1].start) if window else (0, 0)
         visible, opacity, parent = record.get("isVisible", True), record.get("opacity", 1), record.get("parentID")
         masked = []
         while parent:  # a folder hides, fades and masks what is inside it
@@ -2348,26 +2374,26 @@ class Project:
         if not visible or opacity <= 0:
             return canvas
         def cover():  # opacity times the folders' masks, read only for a layer that is drawn
-            return math.prod((self.adjustment_coverage(folder) for folder in masked), start=opacity)
+            return math.prod((self.adjustment_coverage(folder)[part] for folder in masked), start=opacity)
         settings = record.get("adjustment")
         if settings is not None:
             if self._is_noop(record):
                 return canvas
-            coverage = self.adjustment_coverage(record) * cover()
+            coverage = self.adjustment_coverage(record)[part] * cover()
             if settings.get("kind") != "Gaussian Blur":  # only where the mask lets it act (and, for a blur, as far
                 rows, columns = np.flatnonzero(coverage.any(axis=1)), np.flatnonzero(coverage.any(axis=0))  # as it reads)
                 if not len(rows):
                     return canvas
                 margin = sampling_margin(settings)
-                box = (slice(max(0, rows[0] - margin), min(self.height, rows[-1] + 1 + margin)),
-                       slice(max(0, columns[0] - margin), min(self.width, columns[-1] + 1 + margin)))
+                box = (slice(max(0, rows[0] - margin), min(canvas.shape[0], rows[-1] + 1 + margin)),
+                       slice(max(0, columns[0] - margin), min(canvas.shape[1], columns[-1] + 1 + margin)))
                 if (box[0].stop - box[0].start) * (box[1].stop - box[1].start) < coverage.size:
                     inside = self._draw_adjustment(canvas[box], settings, record, coverage[box], quiet,
-                                                   origin=(box[1].start, box[0].start))
+                                                   origin=(left + box[1].start, top + box[0].start))
                     out = canvas.copy()
                     out[box] = inside
                     return out
-            return self._draw_adjustment(canvas, settings, record, coverage, quiet)
+            return self._draw_adjustment(canvas, settings, record, coverage, quiet, origin=(left, top))
         if not record.get("imageFile"):
             return canvas
         mode = record.get("blendMode", "Normal")
@@ -2377,7 +2403,7 @@ class Project:
         if record.get("maskSourceID"):
             warn(f"clipping of '{record.get('name')}' is ignored when computing new layers", once=True)
         rgb, alpha = self.layer_pixels(record)
-        return blend(canvas, self._overlaid(rgb, record), alpha * cover(), mode)
+        return blend(canvas, self._overlaid(rgb[part], record), alpha[part] * cover(), mode)
 
     def _draw_adjustment(self, canvas, settings, record, coverage, quiet, origin=(0, 0)):
         """An adjustment layer over `canvas` (placed at `origin` in the document), through `coverage`."""
@@ -2539,9 +2565,19 @@ class Project:
     def skin(self):
         """The skin mask (8-bit) and its label, from the photo."""
         if self._skin is None:
-            mask, label, self.hair = skin_mask(self.base_rgb(), self.faces(), self.people(), self.parts())
+            mask, label, self.hair = skin_mask(self.base_rgb(), self.faces(), self.people(), self.parts(),
+                                               color=self.skin_color)
             self._skin = (mask, label)
         return self._skin
+
+    def skin_color(self, rgb, faces, skin_tone, people=None):
+        """skin_color, once for what it reads (skin_sample): the skin mask and the reach ask with skin-tone maps
+        that differ in dark pixels only, where it seldom samples."""
+        sample = np.packbits(skin_sample(rgb.shape, faces, skin_tone, people))
+        last = self._skin_color
+        if last is None or last[0] is not rgb or last[1] is not faces or not np.array_equal(last[2], sample):
+            self._skin_color = last = (rgb, faces, sample, skin_color(rgb, faces, skin_tone, people))
+        return last[3]
 
     def skin_reach(self):
         """Where a smoothing layer brushed on by hand has smoothing to show (8-bit, feathered): the skin mask plus
@@ -2553,7 +2589,7 @@ class Project:
             tone = cv2.inRange(cv2.cvtColor(rgb, cv2.COLOR_RGB2YCrCb), (0, 133, 77), (255, 173, 127))
             tone[cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) < 45] = 0
             if faces:
-                distance, brightness = skin_color(rgb, faces, tone, people)
+                distance, brightness = self.skin_color(rgb, faces, tone, people)
                 tone[(distance < 3.5) & (brightness > 0.1)] = 255
             if people is not None:
                 tone[people < 0.5] = 0
@@ -2596,7 +2632,7 @@ class Project:
             raise BuildError("project changed on disk while this ran (saved by Compositor?): nothing was changed, "
                              "run it again")
 
-    def save_png(self, image, filename, path=None):
+    def save_png(self, image, filename, path=None, level=SCRATCH_PNG_LEVEL):
         """Writes a layer's PNG in the background (PNG compression takes a while at 24 MP and needs no Python, so
         the next module goes on meanwhile) to where it waits for commit; until it is on disk, reads of it get the
         image from memory."""
@@ -2605,7 +2641,7 @@ class Project:
         image = image.copy()  # the caller may go on changing its own
         if self._savers is None:
             self._savers = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2) - 1)))
-        self._saving[filename] = (self._savers.submit(image.save, path, format="PNG", compress_level=PNG_COMPRESS_LEVEL), image)
+        self._saving[filename] = (self._savers.submit(image.save, path, format="PNG", compress_level=level), image)
         for name, (future, _) in list(self._saving.items()):
             if future.done():
                 try:
@@ -2671,7 +2707,8 @@ class Project:
                     effects=None):
         record = self._record(name, visible=visible, opacity=opacity, blend=blend)
         record["imageFile"] = f"{record['id']}.png"
-        self.save_png(image if image.mode == "RGBA" else image.convert("RGBA"), record["imageFile"])
+        self.save_png(image if image.mode == "RGBA" else image.convert("RGBA"), record["imageFile"],
+                      level=PNG_COMPRESS_LEVEL if name.startswith(SMOOTH) else SCRATCH_PNG_LEVEL)
         if parent is not None:
             record["parentID"] = parent["id"]
         if mask is not None:
@@ -2709,7 +2746,8 @@ class Project:
         pixels = np.rint(np.clip(rgb, 0, 1) * 65535.0).astype(np.uint16)
         pixels = np.dstack([pixels[..., ::-1], np.full(pixels.shape[:2], 65535, np.uint16)])  # BGRA for OpenCV
         self.written.append(target)
-        ok, encoded = cv2.imencode(".png", pixels, [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESS_LEVEL])
+        level = PNG_COMPRESS_LEVEL if str(name).startswith(SMOOTH) else SCRATCH_PNG_LEVEL
+        ok, encoded = cv2.imencode(".png", pixels, [cv2.IMWRITE_PNG_COMPRESSION, level])
         if not ok:
             raise BuildError(f"could not encode the 16-bit layer '{name}'")
         encoded.tofile(target)
@@ -2880,6 +2918,36 @@ class Project:
     def composite_under(self, key):
         """What Compositor draws under the place `put(key, ...)` adds records to: what a layer going there is computed
         from (the glow from all but the grain and the observation folder above it, say)."""
+        drawn = self._drawn_under(key)
+        if not drawn:
+            return np.ones((self.height, self.width, 3), np.float32)
+        if self._work is not None and drawn[-1]["id"] == self._work_anchor:  # right above the skin stack
+            return self._work
+        return self.composite_through(drawn[-1])
+
+    def composite_window(self, key, window):
+        """composite_under(key) on the part of the document `window` (row and column slices) says, the same pixels
+        for less: the layers drawn on it widened by as far as their adjustments read past it, then cut back. None
+        when that can't give the same (a blur reaches further)."""
+        drawn = self._drawn_under(key)
+        if not drawn or self._work is not None and drawn[-1]["id"] == self._work_anchor:
+            return self.composite_under(key)[window]
+        settings = [record["adjustment"] for record in drawn if record.get("adjustment")]
+        if any(adjustment.get("kind") == "Gaussian Blur" for adjustment in settings):
+            return None
+        margin = sum(sampling_margin(adjustment) for adjustment in settings)
+        rows = slice(max(0, window[0].start - margin), min(self.height, window[0].stop + margin))
+        columns = slice(max(0, window[1].start - margin), min(self.width, window[1].stop + margin))
+        by_id = {record["id"]: record for record in self.layers}
+        canvas = np.ones((rows.stop - rows.start, columns.stop - columns.start, 3), np.float32)
+        with self._reading_ahead([name for record in drawn for name in (record.get("imageFile"), record.get("maskFile")) if name]):
+            for record in drawn:
+                canvas = self._draw(canvas, record, by_id, window=(rows, columns))
+        return canvas[window[0].start - rows.start:window[0].stop - rows.start,
+                      window[1].start - columns.start:window[1].stop - columns.start]
+
+    def _drawn_under(self, key):
+        """The layers Compositor draws under the place `put(key, ...)` adds records to, bottom to top."""
         folder = self.group_folder(key) if key in FOLDER_NAMES else None
         mark = {"id": "", "name": ""}  # a stand-in for the records, where they would go
         if folder is None:
@@ -2893,11 +2961,7 @@ class Project:
                 break
             if not record.get("isGroup"):
                 drawn.append(record)
-        if not drawn:
-            return np.ones((self.height, self.width, 3), np.float32)
-        if self._work is not None and drawn[-1]["id"] == self._work_anchor:  # right above the skin stack
-            return self._work
-        return self.composite_through(drawn[-1])
+        return drawn
 
     # ---- writing ----
 
@@ -3834,14 +3898,22 @@ def module_look(project, args):
     folder["opacity"] = round(min(1.0, args.strength), 2)
     children = [project.adjustment_layer(name, settings, parent=folder) for name, settings, _ in layers]
     project.put("look", [folder] + children)
-    # look.jpg: the frame just under the grade, and with it.
+    if args.no_checks:
+        return
+    # look.jpg: the frame just under the grade, and with it, graded at the size the check image shows (its layers
+    # color each pixel alone and have no masks, so grading the small frame is the small graded frame: a full-size
+    # grade only to shrink it took over a second).
     order = [record for record, _ in render_order(project.layers) if not record.get("isGroup")]
     below = order[order.index(children[0]) - 1]
-    by_id = {record["id"]: record for record in project.layers}
-    before = project.composite_through(below)
+    fit = min(1.0, CHECK_PAIR_HEIGHT / project.height, CHECK_PAIR_WIDTH / project.width)
+    size = (max(1, round(project.width * fit)), max(1, round(project.height * fit)))
+    before = cv2.resize(project.composite_through(below), size, interpolation=cv2.INTER_AREA)
     after = before
     for child in children:
-        after = project._draw(after, child, by_id)
+        graded = adjusted(after, child["adjustment"])
+        if graded is not None:
+            coverage = np.full(after.shape[:2], child.get("opacity", 1) * folder["opacity"], np.float32)
+            after = blend(after, graded, coverage, child.get("blendMode", "Normal"))
     project.look_check = (to8(before), to8(after))
 
 
@@ -3897,7 +3969,13 @@ def module_glow(project, args):
                                         effects=color_overlay(color))
                     for ring, color, pixels in (("外圈", outer, rings[1]), ("内圈", inner, rings[0]))]
         project.put("glow", records)
-        current = project.composite_under("glow")  # the next glow starts from this one's light
+        if first is project._work:  # right above the skin stack, kept in memory as computed (16 bits from a 16-bit
+            current = project.composite_under("glow")  # photo): the next glows see its layers as read back instead
+        else:  # the next glow starts from this one's light: what was under it, these drawn over
+            by_id = {record["id"]: record for record in project.layers}
+            for record in records:
+                if not record.get("isGroup"):
+                    current = project._draw(current, record, by_id)
     project.glow_check = (to8(first), to8(current))
 
 
@@ -3929,9 +4007,18 @@ def observe_curves(project):
     skin, or over the whole frame without a face) to gray with differences spread out; for the black & white
     folder, a contrast curve centered on the skin's black & white value. Returns (level, spread, contrast, center)."""
     level = curves([(0, OBSERVE_LEVEL), (255, OBSERVE_LEVEL)])
-    rgb = project.composite_under("inspection")[::4, ::4]  # a median doesn't need every pixel
     skin = project.skin()[0][::4, ::4] > 200 if project.faces() else None
     sampled = skin is not None and skin.sum() > 100
+    rgb = None
+    if sampled:  # only the skin is read: what is drawn around it, every 4th pixel (a median doesn't need them all)
+        ys, xs = np.nonzero(skin)
+        part = project.composite_window("inspection", (slice(4 * ys.min(), 4 * ys.max() + 1),
+                                                       slice(4 * xs.min(), 4 * xs.max() + 1)))
+        if part is not None:
+            rgb = np.ones(skin.shape + (3,), np.float32)
+            rgb[ys.min():ys.max() + 1, xs.min():xs.max() + 1] = part[::4, ::4]
+    if rgb is None:
+        rgb = project.composite_under("inspection")[::4, ::4]
     flat = blend(rgb, adjusted(rgb, level), np.ones(rgb.shape[:2], np.float32), "Luminosity") * 255.0
     center = np.median(flat[skin] if sampled else flat.reshape(-1, 3), axis=0)
     channels = []
@@ -4031,6 +4118,9 @@ def _label_font(size):
     return ImageFont.load_default()
 
 
+CHECK_PAIR_HEIGHT, CHECK_PAIR_WIDTH = 900.0, 800.0  # glow.jpg and look.jpg: each frame fits in this
+
+
 def contact_sheet(rows, width=1600, gap=8, strip=52):
     """Rows of labelled images on one sheet: each row's images side by side in cells half `width` wide, a label
     above each, so an agent reads one picture instead of several (it is shown reduced to about 1500 px across)."""
@@ -4068,7 +4158,7 @@ def write_checks(project, path):
         if not check:
             continue
         before, after = check
-        fit = min(1.0, 900.0 / before.shape[0], 800.0 / before.shape[1])
+        fit = min(1.0, CHECK_PAIR_HEIGHT / before.shape[0], CHECK_PAIR_WIDTH / before.shape[1])
         size = (max(1, round(before.shape[1] * fit)), max(1, round(before.shape[0] * fit)))
         pair = np.hstack([cv2.resize(before, size, interpolation=cv2.INTER_AREA), np.full((size[1], 8, 3), 255, np.uint8),
                           cv2.resize(after, size, interpolation=cv2.INTER_AREA)])

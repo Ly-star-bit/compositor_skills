@@ -2,10 +2,15 @@ import AppKit
 import SwiftUI
 
 /// The sidebar's top on the PhotoCraft tab: where the documents go and how they come back (PhotoCraft doesn't watch
-/// its files: after layers are added, File › Revert reloads one that is open there), whether PhotoCraft's engine is
-/// on this Mac yet, and the documents made here, each with 重算 for after manual work in PhotoCraft.
+/// its files: after layers are added, File › Revert reloads one that is open there, unless PhotoCraft runs linked and
+/// the script does it), whether PhotoCraft's engine is on this Mac yet, and the documents made here, each with 重算 for
+/// after manual work in PhotoCraft.
 struct PhotoCraftCard: View {
     @Bindable var studio: Studio
+    /// PhotoCraft listens on the link's port: started linked (checked every few seconds while the card shows).
+    @State private var linked = false
+    @State private var running = false
+    @State private var startFailed = false
 
     /// Documents made or added to in this session, newest first.
     private var documents: [URL] {
@@ -35,8 +40,16 @@ struct PhotoCraftCard: View {
                             : "第一次修 PhotoCraft 文档时，自动下载 photocraft-cli \(PhotoCraftApp.cliVersion)（约 107 MB），按 SHA-256 和 Apple 公证校验后缓存")
             }
             note("doc.badge.plus", "照片新建 .pcraft 文档", "放在照片旁边；拖入已有的 .pcraft 会追加图层，同样的模块不会加两遍")
-            note("arrow.uturn.backward.circle", "PhotoCraft 不会自动刷新",
-                 "追加或重算前先在 PhotoCraft 里 ⌘S；做完在 PhotoCraft 里按 F12（文件 › 恢复）载入，先别按 ⌘S")
+            if linked {
+                note("link", "已联动 PhotoCraft",
+                     "在 PhotoCraft 里开着的文档：精修前替你保存，做完自动重新载入，不用再按 ⌘S 和 F12（重新载入后它的历史记录从头开始）")
+            } else {
+                let installed = PhotoCraftApp.app(toOpen: URL(fileURLWithPath: "/document.pcraft")) != nil
+                note("arrow.uturn.backward.circle", "PhotoCraft 不会自动刷新",
+                     "追加或重算前先在 PhotoCraft 里 ⌘S；做完在 PhotoCraft 里按 F12（文件 › 恢复）载入，先别按 ⌘S"
+                     + (installed ? "。用下面的按钮联动启动 PhotoCraft，这两步就自动了" : ""))
+                if installed { linkButton }
+            }
             if !documents.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("这次修过的文档").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
@@ -58,6 +71,34 @@ struct PhotoCraftCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(corner: 16, padding: 12)
+        .task {
+            while !Task.isCancelled {
+                linked = await Task.detached { PhotoCraftApp.isListening() }.value
+                running = PhotoCraftApp.isRunning
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    /// Starts PhotoCraft linked: only when it isn't running (a running PhotoCraft keeps how it was started).
+    private var linkButton: some View {
+        HStack(spacing: 8) {
+            Button {
+                startFailed = (try? PhotoCraftApp.startLinked()) == nil
+            } label: {
+                Label("联动启动 PhotoCraft", systemImage: "link")
+            }
+            .buttonStyle(.glass).controlSize(.small)
+            .disabled(running)
+            .help("用联动方式启动 PhotoCraft：打开它在本机的控制端口（凭只有你能读的令牌连接），并允许它的自动化读写你的"
+                  + "用户文件夹。之后在 PhotoCraft 里开着的文档，精修前自动保存、做完自动重新载入")
+            if running {
+                Text("先退出 PhotoCraft 再点").font(.system(size: 10.5)).foregroundStyle(.secondary)
+            } else if startFailed {
+                Text("没能启动 PhotoCraft").font(.system(size: 10.5)).foregroundStyle(Theme.warning)
+            }
+        }
+        .padding(.leading, 26)
     }
 
     private func note(_ symbol: String, _ title: String, _ detail: String) -> some View {
@@ -87,8 +128,8 @@ struct RefreshDocumentButton: View {
         }
         .buttonStyle(.glass).controlSize(.small)
         .disabled(busy || studio.environment.state != .ready)
-        .help("在 PhotoCraft 里手修过下面的图层（比如高低频）后：先在 PhotoCraft 里 ⌘S，再点这里。按文档现在的样子重算磨皮，"
-              + "重新盖印骨相、眼神光、梦幻柔焦，不加新图层，蒙版和不透明度保留；完成后在 PhotoCraft 里按 F12 载入")
+        .help("在 PhotoCraft 里手修过下面的图层（比如高低频）后点这里（没联动时先在 PhotoCraft 里 ⌘S）。按文档现在的样子重算磨皮，"
+              + "重新盖印骨相、眼神光、梦幻柔焦，不加新图层，蒙版和不透明度保留；联动时自动重新载入，没联动时完成后在 PhotoCraft 里按 F12")
     }
 }
 

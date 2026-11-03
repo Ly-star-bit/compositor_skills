@@ -28,6 +28,7 @@ cp "$SKILL/scripts/retouch_builder.py" "$SKILL/scripts/face_landmarks.swift" "$O
 # the PhotoCraft tab's script, beside it as in the skill folder (it finds retouch_builder.py at ../../scripts)
 mkdir -p "$OUT/Contents/Resources/skill/photocraft-retouch/scripts"
 cp "$SKILL/photocraft-retouch/scripts/pcraft_retouch.py" "$SKILL/photocraft-retouch/scripts/photocraft.py" \
+    "$SKILL/photocraft-retouch/scripts/link_check.py" \
     "$OUT/Contents/Resources/skill/photocraft-retouch/scripts/"
 
 # shipped so the first photo needn't wait for them (and no compiler is needed on the Mac that runs the app):

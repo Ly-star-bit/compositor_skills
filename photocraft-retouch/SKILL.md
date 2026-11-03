@@ -18,10 +18,11 @@ description: >-
 
 - **不要打开任何 GUI**：不用 `open` / `osascript`，不启动 PhotoCraft，不弹出访达，不打开文件夹。要看效果，读检查图或 `--render` 的图。用户自己在 PhotoCraft 里打开 `.pcraft`。
 - **PhotoCraft 不会自动刷新**：给已有文档追加模块或 `--refresh` 之前，先让用户在 PhotoCraft 里 ⌘S 保存；跑完让用户按 F12（文件 › 恢复）载入，先别按 ⌘S，否则会盖掉脚本的修改。运行期间文档被保存过时，脚本报错退出、不写入，再跑一次即可。
+- **联动时这两步是自动的**：PhotoCraft 是用「Compositor 工具」的「联动启动 PhotoCraft」启动的（它的控制端口开着）时，脚本对 PhotoCraft 里开着的文档先替用户保存（输出 `[OK] PhotoCraft: saved … first`），写入后自动重新载入，回到原来的标签位置（`[OK] PhotoCraft: … loaded again`）；这时不用提醒 ⌘S 和 F12，但要告诉用户这个文档在 PhotoCraft 里的历史记录从这里重新开始（撤销不回这次之前）。联动只管用户文件夹里的文档：别处的（外接硬盘）脚本输出一行 `[NOTE]`，照旧手动。运行期间用户在 PhotoCraft 里改了这个文档，脚本报错退出、不写入，再跑一次即可（会先替用户保存）。同一个文档开在两个标签里，或开着智能对象的「编辑内容」标签时，脚本也报错退出、不写入：让用户关掉多余的标签再跑。上一次没能重新载入（`[WARN] PhotoCraft didn't load … again`）的标签比文件旧：之后在那里的改动脚本不会替用户保存，报错让用户先按 F12。联动没连上时脚本输出一行 `[NOTE]`；PhotoCraft 没开着时不输出，照旧手动。第一次用联动时，可以让用户在那台 Mac 上运行 `python3 "${CLAUDE_SKILL_DIR}/scripts/link_check.py"`，它在一个临时文档上把每一步试一遍并打印结果，不碰用户的文档。
 - 不覆盖已有文档：对已存在的 `.pcraft` 用 `--init` 会报错。只有用户明确同意替换时才加 `--force`，它会丢掉原有图层。
 - 依赖：和 compositor-retouch 一样，`python3 -m pip install "opencv-python-headless<5" pillow numpy`，可选 `ai-edge-litert`；人脸关键点用 Apple Vision（Xcode Command Line Tools 的 `swiftc`）。这个文件夹要放在 compositor-retouch 里面（或用环境变量 `RETOUCH_BUILDER` 指向 `retouch_builder.py`）。
 - PhotoCraft 命令行工具：按 `PHOTOCRAFT_CLI` 环境变量、`PATH` 里的 `photocraft-cli`、缓存的顺序找；都没有时，第一次运行从 PhotoCraft 的 GitHub 发布页下载 0.19.0 的 macOS 版（约 107 MB）到 `~/Library/Caches/photocraft-retouch/`，按 SHA-256 和 Apple 公证校验后使用。别的版本也能跑，但会警告：命令参数在版本之间还在变。
-- 读脚本输出再汇报：退出码 0、出现 `[SUCCESS]` 和图层栈才算成功。退出码非 0 时把 `[Error]` 的原因告诉用户，此时文档保持原样。把 `[WARN]` 和 `[NOTE]` 也转告用户。
+- 读脚本输出再汇报：退出码 0、出现 `[SUCCESS]` 和图层栈才算成功。退出码非 0 时把 `[Error]` 的原因告诉用户，此时文档保持原样；只有 `[Error]` 里说 `was written with the new layers` 时（写入之后才停下，例如出图那一步被中断）文档已经写入了新图层。把 `[WARN]` 和 `[NOTE]` 也转告用户。
 
 ## 用法
 
