@@ -3,7 +3,7 @@
 retouch_builder.py - layered portrait-retouching projects for Compositor (.comp).
 
 Writes Compositor's project format, version 11 (Compositor 1.3+): PNG layers in images/ plus manifest.json; adds
-to projects of versions up to 13 (Compositor 1.5), whose 16-bit PNG and OpenEXR layers it reads as 8-bit.
+to projects of versions up to 21 (Compositor 1.6), whose 16-bit PNG and OpenEXR layers it reads as 8-bit.
 The manifest is checked against the rules Compositor applies on load (it ignores a project that breaks any
 of them, silently) and only then swapped in atomically, so an open Compositor window reloads cleanly.
 
@@ -88,10 +88,11 @@ except ImportError as error:
 
 FORMAT = "com.compositor.project"
 FORMAT_VERSION = 11
-# The newest format this skill knows (Compositor 1.5.x, October 2026): 16-bit PNG layers from version 12, OpenEXR
-# (HDR) layers from 13, shape and GIF layers 14-17, the Filter menu's adjustment kinds 16-19, a Prism setting in 20.
-# Layers this skill adds are the kinds every version since 9 takes; a project keeps its own version number.
-NEWEST_VERSION = 20
+# The newest format this skill knows (Compositor 1.6, November 2026): 16-bit PNG layers from version 12, OpenEXR
+# (HDR) layers from 13, shape and GIF layers 14-17, the Filter menu's adjustment kinds 16-19 and 21 (Reduce Noise), a
+# Prism setting in 20. Layers this skill adds are the kinds every version since 9 takes; a project keeps its own
+# version number.
+NEWEST_VERSION = 21
 # Where the files a run writes wait until commit: a hidden folder in the package, outside images/ (see Project._stage).
 STAGING = ".retouch"
 MAX_SIDE = 30_000
@@ -140,14 +141,15 @@ ADJUSTMENT_KINDS = {
     "Hue/Saturation", "Levels", "Curves", "Exposure", "Gradient Map", "Grain", "Add Noise", "Gaussian Blur",
     "Motion Blur", "Invert", "Black & White", "Color Balance",
     "Progressive Blur", "Bloom / Glow", "RGB Split", "Vignette", "Lens Effects", "Tonal Contrast", "Sharpen",
+    "Reduce Noise",
 }
 # The format version each adjustment kind arrived in (7 for the rest), and the version each block inside an
 # adjustment's filterLayerSettings needs (the object itself 16).
 KIND_VERSIONS = {
     "Gaussian Blur": 9, "Motion Blur": 9, "Add Noise": 9, "Progressive Blur": 16, "Bloom / Glow": 16, "RGB Split": 16,
-    "Vignette": 18, "Lens Effects": 18, "Tonal Contrast": 18, "Sharpen": 19,
+    "Vignette": 18, "Lens Effects": 18, "Tonal Contrast": 18, "Sharpen": 19, "Reduce Noise": 21,
 }
-FILTER_BLOCK_VERSIONS = {"vignette": 18, "tonal": 18, "lens": 18, "sharpen": 19}
+FILTER_BLOCK_VERSIONS = {"vignette": 18, "tonal": 18, "lens": 18, "sharpen": 19, "reduceNoise": 21}
 SAMPLINGS = {"Nearest", "Smooth", "High quality"}
 CHANNELS = {"RGB", "Red", "Green", "Blue"}
 UUID_PATTERN = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
@@ -255,6 +257,7 @@ FILTER_SHARED_RANGES = {
 }
 TONAL_RANGES = {"amount": (0, 100), "radius": (1, 100), "shadows": (-100, 100), "midtones": (-100, 100), "highlights": (-100, 100)}
 SHARPEN_RANGES = {"amount": (0, 300), "radius": (0.1, 20)}
+REDUCE_NOISE_RANGES = {"strength": (0, 100), "details": (0, 100), "color": (0, 100)}  # checked, never written
 TONAL_DEFAULTS = {"amount": 50, "radius": 16, "shadows": 40, "midtones": 60, "highlights": 30}
 SHARPEN_DEFAULTS = {"amount": 100, "radius": 1}
 
@@ -1994,9 +1997,9 @@ def _sharpen(rgb8, block):
 
 def adjusted(canvas, settings, origin=(0, 0)):
     """What an adjustment layer makes of `canvas` (RGB 0-1, opaque), before its mask, opacity and blend mode: RGB
-    0-1, or None for a kind not reproduced here (Motion Blur, Add Noise). Gaussian Blur returns (premultiplied RGB,
-    alpha): Compositor blurs without extending the edges, so near them the blur fades out. `origin` is where
-    `canvas` sits in the document (Grain's pattern is fixed there)."""
+    0-1, or None for a kind not reproduced here (Motion Blur, Add Noise, Reduce Noise). Gaussian Blur returns
+    (premultiplied RGB, alpha): Compositor blurs without extending the edges, so near them the blur fades out.
+    `origin` is where `canvas` sits in the document (Grain's pattern is fixed there)."""
     kind = settings.get("kind")
     if kind == "Gaussian Blur":
         sigma = float(settings.get("blurRadius") or 10)
@@ -3027,7 +3030,7 @@ def filter_layer_problems(blocks):
         elif not is_number(value) or not FILTER_SHARED_RANGES[key][0] <= value <= FILTER_SHARED_RANGES[key][1]:
             problems.append(f"filterLayerSettings.{key} must be a number from {FILTER_SHARED_RANGES[key][0]} to "
                             f"{FILTER_SHARED_RANGES[key][1]} (every shared field is required)")
-    for name, ranges in (("tonal", TONAL_RANGES), ("sharpen", SHARPEN_RANGES)):
+    for name, ranges in (("tonal", TONAL_RANGES), ("sharpen", SHARPEN_RANGES), ("reduceNoise", REDUCE_NOISE_RANGES)):
         block = blocks.get(name)
         if block is None:
             continue
@@ -3573,8 +3576,8 @@ EYE_SHARPEN = 180  # percent, as the pixel layer's unsharp mask
 def pixel_fallback(project, kind, what):
     version = int(project.manifest.get("version") or 0)
     say(f"[OK] {what} is a pixel layer: the project is format version {version} and {kind} adjustment layers need "
-        f"{KIND_VERSIONS[kind]}. Saving it once in Compositor (which writes version {NEWEST_VERSION}) lets the next "
-        f"run make a live one")
+        f"{KIND_VERSIONS[kind]}. Saving it once in Compositor (1.5.x writes version 20, 1.6 {NEWEST_VERSION}) lets "
+        f"the next run make a live one")
 
 
 def sculpt_radius(project):

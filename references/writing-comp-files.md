@@ -1,6 +1,6 @@
-# Compositor `.comp` 格式速查（写 format version 11 到 19，读到 20）
+# Compositor `.comp` 格式速查（写 format version 11 到 19，读到 21）
 
-依据 [robbietilton/Compositor](https://github.com/robbietilton/Compositor) 的 `docs/writing-comp-files.md`、`docs/project-format.md` 和 `Compositor/IO/ProjectStore.swift`（MIT，commit `22c7b8d5`，2026-10-08；版本 14–20 的规则和重载机制按 2026-10-26 的 `6d49a239`，见文末）；图层效果一节依据 `Compositor/Document/LayerEffects.swift` 和 `Compositor/IO/ImageExporter.swift`（commit `b4bfdea8`，2026-10-09）；16 位和 HDR 图层（版本 12、13）依据 commit `e8c9e29`（2026-10-12，Compositor 1.5.1）。下面的 JSON 形状由 Compositor 自己的 Swift `Codable` 类型编码得到。
+依据 [robbietilton/Compositor](https://github.com/robbietilton/Compositor) 的 `docs/writing-comp-files.md`、`docs/project-format.md` 和 `Compositor/IO/ProjectStore.swift`（MIT，commit `22c7b8d5`，2026-10-08；版本 14–20 的规则和重载机制按 2026-10-26 的 `6d49a239`，版本 21 按 v1.6.2 的 `0bc0a8a`（2026-11-03），见文末）；图层效果一节依据 `Compositor/Document/LayerEffects.swift` 和 `Compositor/IO/ImageExporter.swift`（commit `b4bfdea8`，2026-10-09）；16 位和 HDR 图层（版本 12、13）依据 commit `e8c9e29`（2026-10-12，Compositor 1.5.1）。下面的 JSON 形状由 Compositor 自己的 Swift `Codable` 类型编码得到。
 
 > **Compositor 遇到任何一处不合规就静默拒绝整个工程**：画布保持原样，没有任何提示。手改后先运行 `retouch_builder.py --comp X.comp --check`。
 
@@ -194,4 +194,8 @@ Compositor 给打开的工程算一个指纹：`manifest.json` 的字节，加�
 
 ## 版本 14–20（Compositor 1.5.x，2026-10）
 
-都是增量，本 skill 写的图层形状不变：14 形状层圆角平滑、15 线条样式、16 `Progressive Blur`/`Bloom / Glow`/`RGB Split` 调整层和 `filterLayerSettings`、17 GIF 层（`gif` 对象）、18 `Vignette`/`Lens Effects`/`Tonal Contrast`、19 `Sharpen`、20 `lens.prismFringe`。读取已有工程时保持它的版本号：版本 18/19 起骨相、眼神光写成 Tonal Contrast / Sharpen 调整层，否则写像素层。新建工程的版本跟着内容走：含骨相 18、含眼神光 19，否则 11（16 位照片 12）；`--8bit` 固定 11。Compositor 每次保存都写最新的 20。
+都是增量，本 skill 写的图层形状不变：14 形状层圆角平滑、15 线条样式、16 `Progressive Blur`/`Bloom / Glow`/`RGB Split` 调整层和 `filterLayerSettings`、17 GIF 层（`gif` 对象）、18 `Vignette`/`Lens Effects`/`Tonal Contrast`、19 `Sharpen`、20 `lens.prismFringe`。读取已有工程时保持它的版本号：版本 18/19 起骨相、眼神光写成 Tonal Contrast / Sharpen 调整层，否则写像素层。新建工程的版本跟着内容走：含骨相 18、含眼神光 19，否则 11（16 位照片 12）；`--8bit` 固定 11。Compositor 1.5.x 每次保存都写 20，1.6 起写 21。
+
+## 版本 21（Compositor 1.6，2026-11）
+
+新增 `Reduce Noise`（减少杂色）调整层，设置在 `filterLayerSettings.reduceNoise`：`strength`、`details`、`color`，都是 0–100。版本 1–20 的工程里出现它，Compositor 整个拒绝。本 skill 不写这种层，只在已有工程里认出、检查范围、原样保留；计算新图层和 `--render` 时不重现它（降噪是非局部均值，没有移植），会提示。

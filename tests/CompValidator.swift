@@ -4,7 +4,8 @@
 // LayerTransform.swift, LayerAppearance.swift, LayerAdjustment.swift, Curves.swift, Levels.swift, HueSaturation.swift,
 // ImageAdjustments.swift, LayerGroups.swift, LiveLayerMask.swift, LayerMask.swift and DocumentLimits.swift at commit
 // 22c7b8d5, the effect records from LayerEffects.swift at b4bfdea (whose ProjectStore validation matches 22c7b8d5), and
-// the format 12/13 image rules (16-bit PNG layers, OpenEXR HDR layers) from ProjectStore.swift at e8c9e29 (2026-10-12).
+// the format 12/13 image rules (16-bit PNG layers, OpenEXR HDR layers) from ProjectStore.swift at e8c9e29 (2026-10-12),
+// and format 21 (Reduce Noise layers) from ProjectStore.swift and LayerAdjustment.swift at v1.6.2 (0bc0a8a, 2026-11-03).
 // Types this skill never writes (text, shape) are stubbed, and errors carry a reason so a failure says which rule
 // tripped. Effects out of range fail here, though Compositor loads them (and then doesn't draw them).
 //
@@ -55,7 +56,7 @@ enum ProjectError: Error, CustomStringConvertible {
 
 // MARK: - ProjectStore.swift
 struct ProjectManifest: Codable {
-    static let current = 20
+    static let current = 21
     static let supported = 1...ProjectManifest.current
     var format = "com.compositor.project"
     var version = ProjectManifest.current
@@ -286,13 +287,13 @@ enum AdjustmentKind: String, Codable, CaseIterable {
     case blackWhite = "Black & White", colorBalance = "Color Balance"
     case progressiveBlur = "Progressive Blur", bloomGlow = "Bloom / Glow", rgbSplit = "RGB Split"
     case vignette = "Vignette", lensEffects = "Lens Effects", tonalContrast = "Tonal Contrast"
-    case sharpen = "Sharpen"
+    case sharpen = "Sharpen", reduceNoise = "Reduce Noise"
 }
 
-/// The Filter menu's layer settings (LayerAdjustment.swift at 6d49a239, versions 16-20). Synthesized Codable, as
-/// Compositor's, so every shared field must be present. Tonal Contrast and Sharpen, which this skill writes, are
-/// mirrored with their ranges (FilterSettings.normalized: a value must equal its clamped self); Vignette and Lens
-/// Effects only by presence, for the version gates.
+/// The Filter menu's layer settings (LayerAdjustment.swift at 6d49a239, versions 16-20, and v1.6.2 for 21). Synthesized
+/// Codable, as Compositor's, so every shared field must be present. Tonal Contrast and Sharpen, which this skill writes,
+/// and Reduce Noise, which it reads, are mirrored with their ranges (FilterSettings.normalized: a value must equal its
+/// clamped self); Vignette and Lens Effects only by presence, for the version gates.
 struct FilterLayerSettings: Codable, Equatable {
     struct Block: Codable, Equatable {}
     struct Tonal: Codable, Equatable {
@@ -306,6 +307,10 @@ struct FilterLayerSettings: Codable, Equatable {
         var amount: Double, radius: Double
         var isValid: Bool { (0...300).contains(amount) && (0.1...20).contains(radius) }
     }
+    struct ReduceNoise: Codable, Equatable {
+        var strength: Double, details: Double, color: Double
+        var isValid: Bool { (0...100).contains(strength) && (0...100).contains(details) && (0...100).contains(color) }
+    }
     var progressiveFrom: Double, progressiveTo: Double
     var progressiveStart: CGPoint?, progressiveEnd: CGPoint?
     var progressiveRadial: Bool, progressiveInverted: Bool
@@ -318,12 +323,13 @@ struct FilterLayerSettings: Codable, Equatable {
     var tonal: Tonal?
     var lens: Block?
     var sharpen: Sharpen?
+    var reduceNoise: ReduceNoise?
     var isValid: Bool {
         (0...250).contains(progressiveFrom) && (0...250).contains(progressiveTo) && (0...100).contains(bloomAmount)
             && (1...150).contains(bloomRadius) && (0...200).contains(rgbSplitDistance) && (0...400).contains(rgbSplitBlur)
             && (-180...180).contains(rgbSplitAngle) && (1...100_000).contains(rgbSplitReach)
             && [progressiveStart, progressiveEnd, rgbSplitCenter].compactMap { $0 }.allSatisfy { $0.x.isFinite && $0.y.isFinite }
-            && (tonal?.isValid ?? true) && (sharpen?.isValid ?? true)
+            && (tonal?.isValid ?? true) && (sharpen?.isValid ?? true) && (reduceNoise?.isValid ?? true)
     }
 }
 
@@ -611,6 +617,9 @@ func validate(_ manifest: ProjectManifest) throws {
             }
             if adjustment.kind == .sharpen || filterLayer?.sharpen != nil {
                 guard manifest.version >= 19 else { throw ProjectError.invalid("Sharpen needs v19") }
+            }
+            if adjustment.kind == .reduceNoise || filterLayer?.reduceNoise != nil {
+                guard manifest.version >= 21 else { throw ProjectError.invalid("Reduce Noise needs v21") }
             }
         }
         guard layer.maskFile == nil || (manifest.version >= (layer.isGroup == true ? 6 : 4)

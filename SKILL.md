@@ -66,7 +66,7 @@ python3 "$B" --comp "/path/Portrait.comp" --render
 python3 "$B" --comp "/path/Portrait.comp" --check
 ```
 
-输入支持 JPEG、PNG、TIFF（含 16 位、EXIF 方向、嵌入的 ICC）；HEIC、RAW 先转换（`sips -s format tiff in.heic --out in.tif`）。16 位照片新建时保留 16 位（格式 12，要 Compositor 1.5 以上）；给旧版 Compositor 用加 `--8bit`。已有工程可以是 Compositor 存的格式 12 到 20，版本保持不变。细节见 modules.md「依赖与输入」。
+输入支持 JPEG、PNG、TIFF（含 16 位、EXIF 方向、嵌入的 ICC）；HEIC、RAW 先转换（`sips -s format tiff in.heic --out in.tif`）。16 位照片新建时保留 16 位（格式 12，要 Compositor 1.5 以上）；给旧版 Compositor 用加 `--8bit`。已有工程可以是 Compositor 存的格式 12 到 21，版本保持不变。细节见 modules.md「依赖与输入」。
 
 ## 预设
 
@@ -119,7 +119,7 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 ## 须知
 
 - 重复运行不会堆第二套图层：高低频、中性灰、骨相、实时的眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（`重做 · 保留蒙版`），双曲线只补缺的那一层，只有辉光会叠加。
-- 像素层是快照，调整层是实时的。骨相、眼神光在格式 18/19 起的工程里是实时调整层，更早的工程里是像素层，脚本会说明；新建工程的版本跟着内容走（含眼神光 19，`--8bit` 固定 11），已有工程保持版本，在 Compositor 里保存一次就升到 20。
+- 像素层是快照，调整层是实时的。骨相、眼神光在格式 18/19 起的工程里是实时调整层，更早的工程里是像素层，脚本会说明；新建工程的版本跟着内容走（含眼神光 19，`--8bit` 固定 11），已有工程保持版本，在 Compositor 里保存一次就升到最新格式（1.5.x 是 20，1.6 是 21）。
 - 写入是安全的：新文件先放在包内隐藏文件夹 `.retouch/`，校验通过后几毫秒内一起落地，Compositor 只重载一次；运行中工程若被 Compositor 保存过，脚本报错退出、不改动，再跑一次即可。
 - `app/` 里是这个脚本的 macOS 图形界面「Compositor 工具」：自动认出 Compositor 正在编辑的工程、一键精修、批量处理，不用和 AI 对话。用户想点按钮时告诉他们，不要替用户启动它，也不要打开访达。
 - 用户要的是 PhotoCraft（`.pcraft` 文档）时，用 `photocraft-retouch/` 里的技能（它有自己的 SKILL.md，同样的模块，用这个脚本计算图层）；「Compositor 工具」也有 PhotoCraft 标签页。

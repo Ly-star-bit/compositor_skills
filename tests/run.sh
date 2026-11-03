@@ -113,6 +113,21 @@ for comp in sys.argv[1:]:
     json.dump(manifest, open(path, "w"), ensure_ascii=False, indent=2)
 EOF
 }
+reduce_noise() {  # reduce_noise <project> <version> [strength]: a Reduce Noise layer over the photo, in the shape
+    "$PY" - "$@" <<'EOF'  # Compositor 1.6 saves (a filter layer like the project's Sharpen, its settings in reduceNoise)
+import copy, json, sys, uuid
+path = sys.argv[1] + "/manifest.json"; m = json.load(open(path))
+layer = copy.deepcopy(next(l for l in m["layers"] if (l.get("adjustment") or {}).get("kind") == "Sharpen"))
+for key in ("maskFile", "maskEnabled", "parentID"):
+    layer.pop(key, None)
+layer.update(id=str(uuid.uuid4()).upper(), name="Reduce Noise", opacity=1.0)
+layer["adjustment"]["kind"] = "Reduce Noise"
+settings = layer["adjustment"]["filterLayerSettings"]; settings.pop("sharpen")
+settings["reduceNoise"] = {"strength": float(sys.argv[3]) if len(sys.argv) > 3 else 50, "details": 50, "color": 50}
+m["layers"].insert(1, layer); m["version"] = int(sys.argv[2])
+json.dump(m, open(path, "w"), ensure_ascii=False)
+EOF
+}
 has() {  # has <label> <command...>: BAD unless the command prints something
     local label=$1; shift
     if [ -n "$("$@" 2>/dev/null)" ]; then echo "  ok: $label"; else echo "  BAD: $label"; fi
@@ -907,6 +922,21 @@ suite_validator() {  # the validator itself still rejects what Compositor reject
     cp -R vl.comp vs.comp && "$PY" -c "import json;p='vs.comp/manifest.json';m=json.load(open(p));l=next(x for x in m['layers'] if (x.get('adjustment') or {}).get('kind')=='Sharpen');l['adjustment']['filterLayerSettings'].pop('bloomAmount');json.dump(m,open(p,'w'))"
     "$VALIDATE" vs.comp > /dev/null; want 1 $? "a shared filter field left out fails"
     build --comp vs.comp --check > /dev/null 2>&1; want 1 $? "...and --check refuses it too"
+    # Compositor 1.6 saves format 21, and its Reduce Noise layers (not reproduced here) must not stop a run
+    cp -R vl.comp vn.comp && reduce_noise vn.comp 21
+    "$VALIDATE" vn.comp > /dev/null; want 0 $? "a format-21 project with a Reduce Noise layer passes"
+    build --comp vn.comp --grain --glow --no-checks > vn.log 2>&1; want 0 $? "...and takes new layers"
+    lacks "...with no warning that the format is newer than the skill knows" grep -m1 "newer than" vn.log
+    has "...saying the Reduce Noise layer is left out of computed layers" grep -m1 "Reduce Noise adjustment .* isn't reproduced" vn.log
+    "$PY" -c "import json; m = json.load(open('vn.comp/manifest.json')); k = [(l.get('adjustment') or {}).get('kind') for l in m['layers']]
+print('  ok: ...still format 21 with its Reduce Noise layer' if m['version'] == 21 and 'Reduce Noise' in k else f'  BAD: version {m[\"version\"]}, kinds {k}')"
+    "$VALIDATE" vn.comp > /dev/null; want 0 $? "...and still passes"
+    cp -R vl.comp vo.comp && reduce_noise vo.comp 20
+    "$VALIDATE" vo.comp > /dev/null; want 1 $? "a Reduce Noise layer in a format-20 project fails"
+    build --comp vo.comp --check > /dev/null 2>&1; want 1 $? "...and --check refuses it too"
+    cp -R vl.comp vb.comp && reduce_noise vb.comp 21 150
+    "$VALIDATE" vb.comp > /dev/null; want 1 $? "a Reduce Noise strength over 100 fails"
+    build --comp vb.comp --check > /dev/null 2>&1; want 1 $? "...and --check refuses it too"
 }
 
 suite_timing() {  # on request: a 24-megapixel photo through the dr5 preset with the neutral gray

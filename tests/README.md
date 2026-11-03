@@ -25,8 +25,8 @@ tests/run.sh timing                  # 另跑：24MP 照片走 dr5 预设加中�
 | `render` | 用 Compositor 自己的代码（`AdjustReference.*`，从它的源码抄来，附 MIT 许可声明）逐像素核对脚本移植的调整层算法；Tonal Contrast、Sharpen 连同 Compositor 在 Core Image 里做的模糊一起跑（命令行里的 CIContext，没有窗口），离边缘 3 个半径以外要求最大差 3 级、超 1 级的像素不到 0.5%（实测 2 级、0.06%；Core Image 的模糊精度有限，边缘带和噪声上差得多些，另行报告）；`--render` 不改工程；6 种调色都能生成 |
 | `benches` | 量化测试（`bench.py`）。内容：皮肤蒙版的覆盖率；磨皮（`smoothing`）淡掉多少画上的痘印、真实的法令纹和眼袋留下多少、五官旁边的皮肤被改了多少，并要求默认的 `form` 引擎在这几项上胜过旧的 `guided`。低于调参时记下的门槛就标 BAD |
 | `heal` | 在已知位置人工点斑（`heal_eval.py`），看磨皮先行的祛痘找回了多少、有没有误修；`dense` 是痘痘肌：整张脸 40 个斑，大多"稍暗又稍红"，只搜内脸的旧方法找到 12 个；还检查 `--delicious-skin` 的图层名标出祛痘数和痘痘肌 |
-| `validator` | 校验程序本身还能识别 Compositor 会拒绝的写法，包括 `filterLayerSettings` 少一个共用字段、Tonal Contrast 强度超范围（`--check` 也要拒绝） |
+| `validator` | 校验程序本身还能识别 Compositor 会拒绝的写法，包括 `filterLayerSettings` 少一个共用字段、Tonal Contrast 强度超范围（`--check` 也要拒绝）；Compositor 1.6 的格式 21：带减少杂色层的工程能通过、能追加图层、不报格式太新，格式 20 里出现减少杂色层、强度超范围都要拒绝 |
 
 每套最后都用 `CompValidator` 检查生成的工程，它按 Compositor 自己的加载规则校验。任何一行出现 BAD、FAIL 或 Python 报错，这一套就算失败，最后汇总。
 
-`CompValidator.swift` 抄写了 Compositor（MIT 许可，Wonder Assembly LLC）的工程格式类型和校验规则（到格式版本 20：版本 13 以前按 commit `e8c9e29`，滤镜调整层按 `6d49a239`），许可声明在文件开头。
+`CompValidator.swift` 抄写了 Compositor（MIT 许可，Wonder Assembly LLC）的工程格式类型和校验规则（到格式版本 21：版本 13 以前按 commit `e8c9e29`，滤镜调整层按 `6d49a239`，格式 21 按 v1.6.2 的 `0bc0a8a`），许可声明在文件开头。
