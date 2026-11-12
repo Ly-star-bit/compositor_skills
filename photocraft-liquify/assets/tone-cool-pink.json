@@ -1,0 +1,91 @@
+{
+ "note": [
+  "Warm tungsten room -> cool pink, less yellow: the tone a client accepted for example-plan.json.",
+  "Layer 1 turns the room's orange-yellows (hue 18-70 degrees; skin at 2-8 stays out) toward mauve.",
+  "Layer 2 lifts blue most at skin level and takes a little red off the top.",
+  "Use it as a start for photos shot in the same kind of light; otherwise measure with the tone command."
+ ],
+ "layers": [
+  {
+   "command": "layer.newAdjustmentLayer.hueSaturation",
+   "name": "色调 · 环境去黄",
+   "params": {
+    "yellows": {
+     "hue": -10,
+     "saturation": -30,
+     "lightness": 0,
+     "range": [
+      8,
+      18,
+      70,
+      100
+     ]
+    }
+   }
+  },
+  {
+   "command": "layer.newAdjustmentLayer.curves",
+   "name": "色调 · 偏冷粉",
+   "params": {
+    "red": [
+     [
+      0,
+      0
+     ],
+     [
+      128,
+      127
+     ],
+     [
+      215,
+      210
+     ],
+     [
+      255,
+      253
+     ]
+    ],
+    "green": [
+     [
+      0,
+      0
+     ],
+     [
+      170,
+      172
+     ],
+     [
+      255,
+      255
+     ]
+    ],
+    "blue": [
+     [
+      0,
+      0
+     ],
+     [
+      40,
+      43
+     ],
+     [
+      100,
+      107
+     ],
+     [
+      167,
+      177
+     ],
+     [
+      240,
+      244
+     ],
+     [
+      255,
+      255
+     ]
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,100 @@
+{
+ "note": [
+  "The tone pairs that went with example-plan.json: the same thing in the photo and in the reference.",
+  "Skin twice, lips, something white; then the surroundings (a curtain there, a wall here)."
+ ],
+ "pairs": [
+  {
+   "name": "cheek",
+   "photo": [
+    1880,
+    2540,
+    1960,
+    2620
+   ],
+   "reference": [
+    1960,
+    2040,
+    2050,
+    2140
+   ]
+  },
+  {
+   "name": "arm",
+   "photo": [
+    1300,
+    3350,
+    1500,
+    3500
+   ],
+   "reference": [
+    533,
+    2400,
+    800,
+    2560
+   ]
+  },
+  {
+   "name": "lips",
+   "photo": [
+    1780,
+    2690,
+    1880,
+    2740
+   ],
+   "reference": [
+    1880,
+    2215,
+    1960,
+    2250
+   ]
+  },
+  {
+   "name": "white cuff",
+   "photo": [
+    1750,
+    3260,
+    1900,
+    3400
+   ],
+   "reference": [
+    880,
+    1840,
+    1000,
+    2000
+   ]
+  }
+ ],
+ "surroundings": [
+  {
+   "name": "curtain / wall",
+   "photo": [
+    300,
+    1500,
+    900,
+    2500
+   ],
+   "reference": [
+    300,
+    900,
+    800,
+    1400
+   ]
+  },
+  {
+   "name": "panel / wall",
+   "photo": [
+    3000,
+    400,
+    3600,
+    1000
+   ],
+   "reference": [
+    300,
+    900,
+    800,
+    1400
+   ]
+  }
+ ]
+}

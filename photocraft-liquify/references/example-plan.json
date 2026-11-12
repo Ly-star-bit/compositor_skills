@@ -1,0 +1,469 @@
+{
+ "note": [
+  "A real plan: a 4000 x 5333 portrait, seated, three-quarter face, one hand under the jaw, the other arm bent and",
+  "pressed against the body, captions printed across the hips. Accepted by the client at these strengths.",
+  "Read it for the shape of a plan; the coordinates belong to that one photo.",
+  "Face width 520, upper arm 345 (visible band), forearm 330, waist 822, thigh about 800.",
+  "The right hip and thigh were left alone: three captions sit on that edge, so the right waist ends above them",
+  "with ease_end. Left of the captions the pushes are level (direction [1, 0]).",
+  "`note` keys are ignored by the script."
+ ],
+ "parts": [
+  {
+   "part": "jaw",
+   "name": "jaw far",
+   "width": 520,
+   "toward": [
+    1800,
+    2650
+   ],
+   "edge": [
+    [
+     2026,
+     2548
+    ],
+    [
+     2028,
+     2610
+    ],
+    [
+     2023,
+     2658
+    ],
+    [
+     2018,
+     2692
+    ],
+    [
+     1999,
+     2740
+    ],
+    [
+     1970,
+     2778
+    ],
+    [
+     1932,
+     2812
+    ]
+   ]
+  },
+  {
+   "part": "cheek",
+   "name": "cheek near",
+   "width": 520,
+   "toward": [
+    1800,
+    2650
+   ],
+   "edge": [
+    [
+     1500,
+     2520
+    ],
+    [
+     1502,
+     2580
+    ],
+    [
+     1505,
+     2640
+    ],
+    [
+     1510,
+     2700
+    ]
+   ]
+  },
+  {
+   "part": "eye",
+   "name": "eye left",
+   "at": [
+    1617,
+    2463
+   ],
+   "width": 106
+  },
+  {
+   "part": "eye",
+   "name": "eye right",
+   "at": [
+    1874,
+    2381
+   ],
+   "width": 106
+  },
+  {
+   "part": "upper_arm",
+   "name": "upper arm",
+   "width": 345,
+   "toward": [
+    1650,
+    3450
+   ],
+   "edge": [
+    [
+     1200,
+     3062
+    ],
+    [
+     1180,
+     3126
+    ],
+    [
+     1176,
+     3190
+    ],
+    [
+     1182,
+     3270
+    ],
+    [
+     1200,
+     3350
+    ],
+    [
+     1224,
+     3422
+    ],
+    [
+     1264,
+     3502
+    ],
+    [
+     1312,
+     3566
+    ],
+    [
+     1352,
+     3606
+    ],
+    [
+     1400,
+     3654
+    ],
+    [
+     1480,
+     3710
+    ],
+    [
+     1560,
+     3758
+    ],
+    [
+     1640,
+     3806
+    ],
+    [
+     1720,
+     3854
+    ]
+   ]
+  },
+  {
+   "part": "elbow",
+   "name": "elbow",
+   "width": 330,
+   "toward": [
+    1880,
+    3750
+   ],
+   "edge": [
+    [
+     1800,
+     3894
+    ],
+    [
+     1880,
+     3918
+    ],
+    [
+     1944,
+     3928
+    ],
+    [
+     1992,
+     3910
+    ],
+    [
+     2020,
+     3870
+    ],
+    [
+     2026,
+     3830
+    ]
+   ]
+  },
+  {
+   "part": "forearm",
+   "name": "forearm",
+   "width": 330,
+   "toward": [
+    1860,
+    3650
+   ],
+   "edge": [
+    [
+     2024,
+     3750
+    ],
+    [
+     2022,
+     3670
+    ],
+    [
+     2016,
+     3590
+    ],
+    [
+     2010,
+     3520
+    ]
+   ]
+  },
+  {
+   "part": "waist",
+   "name": "waist left",
+   "width": 822,
+   "toward": [
+    1860,
+    4000
+   ],
+   "direction": [
+    1,
+    0
+   ],
+   "edge": [
+    [
+     1397,
+     3727
+    ],
+    [
+     1431,
+     3840
+    ],
+    [
+     1453,
+     3953
+    ],
+    [
+     1442,
+     3999
+    ],
+    [
+     1397,
+     4090
+    ],
+    [
+     1303,
+     4132
+    ],
+    [
+     1248,
+     4215
+    ],
+    [
+     1212,
+     4279
+    ],
+    [
+     1175,
+     4352
+    ],
+    [
+     1147,
+     4444
+    ],
+    [
+     1125,
+     4527
+    ],
+    [
+     1106,
+     4600
+    ],
+    [
+     1100,
+     4673
+    ],
+    [
+     1125,
+     4737
+    ],
+    [
+     1147,
+     4802
+    ]
+   ]
+  },
+  {
+   "part": "thigh",
+   "name": "thigh left",
+   "width": 800,
+   "toward": [
+    1700,
+    5100
+   ],
+   "direction": [
+    1,
+    0
+   ],
+   "brush": 280,
+   "strength": 0.85,
+   "edge": [
+    [
+     1147,
+     4802
+    ],
+    [
+     1161,
+     4875
+    ],
+    [
+     1184,
+     4948
+    ],
+    [
+     1216,
+     5022
+    ],
+    [
+     1257,
+     5095
+    ],
+    [
+     1312,
+     5168
+    ],
+    [
+     1386,
+     5242
+    ],
+    [
+     1468,
+     5306
+    ]
+   ]
+  },
+  {
+   "part": "waist",
+   "name": "waist right",
+   "width": 822,
+   "toward": [
+    1860,
+    4000
+   ],
+   "direction": [
+    -1,
+    0
+   ],
+   "brush": 340,
+   "ease_end": true,
+   "edge": [
+    [
+     2335,
+     3796
+    ],
+    [
+     2303,
+     3889
+    ],
+    [
+     2277,
+     3981
+    ],
+    [
+     2256,
+     4062
+    ],
+    [
+     2252,
+     4120
+    ],
+    [
+     2260,
+     4143
+    ],
+    [
+     2289,
+     4200
+    ],
+    [
+     2315,
+     4250
+    ],
+    [
+     2335,
+     4293
+    ],
+    [
+     2355,
+     4335
+    ]
+   ]
+  }
+ ],
+ "nudges": [
+  {
+   "name": "hand under the jaw",
+   "size": 560,
+   "at": [
+    1600,
+    2880
+   ],
+   "direction": [
+    0.33,
+    -0.95
+   ],
+   "px": 6
+  }
+ ],
+ "captions": [
+  {
+   "name": "caption 1",
+   "box": [
+    1150,
+    4515,
+    2960,
+    4610
+   ]
+  },
+  {
+   "name": "caption 2",
+   "box": [
+    1470,
+    4605,
+    2650,
+    4700
+   ]
+  },
+  {
+   "name": "caption 3",
+   "box": [
+    1320,
+    4715,
+    2800,
+    4800
+   ]
+  },
+  {
+   "name": "bottom line",
+   "box": [
+    1370,
+    4975,
+    2630,
+    5045
+   ]
+  },
+  {
+   "name": "title",
+   "box": [
+    1400,
+    180,
+    2600,
+    460
+   ]
+  }
+ ]
+}

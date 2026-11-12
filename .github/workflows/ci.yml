@@ -1,5 +1,5 @@
 # Tests on every push and pull request; on main, once they pass, a release: Compositor 工具.dmg built from app/ and the
-# skill folder (both skills, with the disk image inside, as compositor-retouch-<date>.zip), tagged v<YYYY.MM.DD>
+# skill folder (all three skills, with the disk image inside, as compositor-retouch-<date>.zip), tagged v<YYYY.MM.DD>
 # (v<YYYY.MM.DD>.2, .3 ... for more the same day). Everything runs on GitHub's macOS 26 (Apple silicon) runners: the
 # app needs the macOS 26 SDK, the skills Apple Vision.
 name: CI
@@ -56,6 +56,8 @@ jobs:
           "$target/photocraft-cli-$version-macos-universal/photocraft-cli" --version
       - name: Tests (PhotoCraft output against retouch_builder's renders, append, refresh, errors)
         run: PYTHON=python photocraft-retouch/tests/run.sh
+      - name: Liquify skill tests (recipes, strokes against the measured field, captions, tone, guards)
+        run: PYTHON=python photocraft-liquify/tests/run.sh
 
   release:
     name: Release
@@ -102,6 +104,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
-            "${{ steps.package.outputs.zip }}#技能文件夹（compositor-retouch + photocraft-retouch，含 Compositor 工具.dmg）" \
+            "${{ steps.package.outputs.zip }}#技能文件夹（compositor-retouch + photocraft-retouch + photocraft-liquify，含 Compositor 工具.dmg）" \
             "${{ steps.package.outputs.dmg }}#Compositor 工具.dmg（macOS 26，Apple 芯片）" \
             --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes

@@ -13,5 +13,22 @@ venv/
 .build/
 *.dSYM/
 
+# Photos and retouching documents: never in the repository. (The app's own images in app/Resources are tracked
+# already and stay tracked.)
+*.jpg
+*.jpeg
+*.heic
+*.pcraft
+*.psd
+*.comp/
+/*.png
+/*.tif
+/*.tiff
+# What photocraft-liquify writes beside a photo, and a work folder beside it
+*.plan.json
+*.checks/
+*.patches.jpg
+/work/
+
 # Claude Code local settings
 .claude/settings.local.json
