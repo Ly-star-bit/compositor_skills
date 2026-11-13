@@ -1,6 +1,7 @@
 {
  "note": [
   "Copy, then replace every coordinate with ones read from grid views of YOUR photo. Delete the parts you do not use.",
+  "Judge each part on THIS person first (SKILL.md step 2). Every part must say \"need\": \"clear\" (full), \"some\" (half) or \"none\" (left alone; the other fields may then be dropped, add \"why\"). Between two of them take the lighter.",
   "x and y are picture pixels. `edge` follows the visible outline in the order references/body-parts.md gives.",
   "`toward` is a point INSIDE the body part. `width` is the part's own width in pixels (or two points).",
   "Names in English: the check pictures cannot draw other scripts."
@@ -9,6 +10,7 @@
   {
    "part": "jaw",
    "name": "jaw left",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -45,6 +47,7 @@
   {
    "part": "jaw",
    "name": "jaw right",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -80,6 +83,7 @@
   {
    "part": "cheek",
    "name": "cheek under hair",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -108,6 +112,7 @@
   {
    "part": "eye",
    "name": "eye left",
+   "need": "CHOOSE clear, some or none",
    "at": [
     0,
     0
@@ -118,6 +123,7 @@
   {
    "part": "eye",
    "name": "eye right",
+   "need": "CHOOSE clear, some or none",
    "at": [
     0,
     0
@@ -127,6 +133,7 @@
   {
    "part": "upper_arm",
    "name": "upper arm left outer",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -171,6 +178,7 @@
   {
    "part": "elbow",
    "name": "elbow left",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -203,6 +211,7 @@
   {
    "part": "forearm",
    "name": "forearm left outer",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -231,6 +240,7 @@
   {
    "part": "waist",
    "name": "waist left",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -275,6 +285,7 @@
   {
    "part": "waist",
    "name": "waist right",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,
@@ -318,6 +329,7 @@
   {
    "part": "thigh",
    "name": "thigh left outer",
+   "need": "CHOOSE clear, some or none",
    "width": 0,
    "toward": [
     0,

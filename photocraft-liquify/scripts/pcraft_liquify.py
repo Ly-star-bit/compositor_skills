@@ -4,6 +4,8 @@
     pcraft_liquify.py grid  PHOTO --out VIEW.jpg [--box X0 Y0 X1 Y1]       a view with a pixel grid, to read positions
     pcraft_liquify.py probe PHOTO --row Y --from X0 --to X1                where lightness steps: to pin down an edge
     pcraft_liquify.py apply PHOTO --plan PLAN.json [--tone TONE.json]      liquify (+ tone): PHOTO_液化.jpg / .pcraft
+PHOTO is a picture (JPEG, PNG, TIFF) or a layered document (.pcraft, .psd): the liquify always goes on a stamp of
+what is visible (盖印图层), a new layer on top, so the photo and every layer below stay as they were.
     pcraft_liquify.py tone  PHOTO REFERENCE --pairs PAIRS.json --out TONE.json    tone layers measured from a reference
 
 Everything PhotoCraft does goes through its MCP server (`photocraft-cli mcp`, see photocraft_mcp.py): no window opens.
@@ -34,6 +36,7 @@ except ImportError as _error:  # said again, with the fix, when a command needs 
     _IMPORT_ERROR = _error
 
 SUFFIX = "_液化"
+DOCUMENTS = (".pcraft", ".psd", ".psb")  # layered: looked at as PhotoCraft renders them
 _warned = []
 
 
@@ -91,6 +94,10 @@ POINT_RECIPES = {
     "eye": dict(tool="bloat", size=1.7, dabs=2, rate=80),   # width = the eye, corner to corner; about +7%
     "nose": dict(tool="pucker", size=1.6, dabs=2, rate=60),  # width = the nostril wings; about -4%
 }
+# How much THIS person needs a part done, judged from the picture before tracing (SKILL.md step 2). A recipe is what
+# was accepted on one sitter who clearly needed it; the same share of a face that is slim already makes a cone of it.
+NEEDS = {"clear": 1.0, "some": 0.5, "none": 0.0}
+FACE = ("jaw", "cheek")
 PART_LIMIT = 30.0        # no edge moves further than this share (%) of its part's width
 PICTURE_LIMIT = 0.05     # ... nor further than this share of the picture's long side
 BRUSH_PER_PUSH = 8.5     # a brush at least this many times the push keeps the stretch around the edge gentle
@@ -161,6 +168,28 @@ def edge_points(part, label):
         raise Fail(f"{label}: every `edge` point must be [x, y]") from None
 
 
+def no_part(label, kind):
+    return (f"{label}: no part `{kind}`. Edges: {', '.join(sorted(RECIPES))}; points: "
+            f"{', '.join(sorted(POINT_RECIPES))}; anything else goes in `contours`")
+
+
+def part_need(part, label):
+    """The share of its recipe a part gets from `need`. Every part has to say it: full is not a default to fall into."""
+    need = part.get("need")
+    if need is None:
+        face = (" On a face with no jaw corner standing out it makes a cone of the chin."
+                if part.get("part") in FACE else "")
+        warn(f"{label}: no \"need\", so this is the full amount, which was accepted on a person who plainly needed it."
+             f"{face} Look at THIS person and write \"need\": \"clear\" (it plainly bulges or is wide: the full "
+             "amount), \"some\" (it shows, but mildly: half) or \"none\" (fine as it is: left alone). Between two of "
+             "them, take the lighter")
+        return 1.0
+    if need not in NEEDS:
+        raise Fail(f"{label}: \"need\" is \"clear\", \"some\" or \"none\" (judge the person first, SKILL.md step 2), "
+                   f"not {need!r}")
+    return NEEDS[need]
+
+
 def part_percent(recipe, points, toward, width, normals=None):
     """Percent of the width each edge point moves, at strength 1."""
     along = lengths(points)
@@ -203,9 +232,11 @@ def part_contours(part, index, strength, long_side):
     kind = part.get("part")
     label = part.get("name") or f"{kind} #{index + 1}"
     if kind not in RECIPES:
-        raise Fail(f"{label}: no part `{kind}`. Edges: {', '.join(sorted(RECIPES))}; points: "
-                   f"{', '.join(sorted(POINT_RECIPES))}; anything else goes in `contours`")
+        raise Fail(no_part(label, kind))
     recipe = RECIPES[kind]
+    share = part_need(part, label)
+    if share == 0:
+        return []
     points = edge_points(part, label)
     width = as_width(part.get("width"), label)
     toward = part.get("toward")
@@ -218,6 +249,7 @@ def part_contours(part, index, strength, long_side):
     factor = float(part.get("strength", 1.0)) * strength
     if not 0 < factor <= 1.8:
         raise Fail(f"{label}: strength {factor:g} (the part's times --strength) must be above 0 and at most 1.8")
+    factor *= share
     inward = edge_normals(points, toward) if toward is not None else None
     percent = [p * factor for p in part_percent(recipe, points, toward, width, inward)]
     if inward is not None:  # two readings of one thing: the centre of a part W wide is W/2 in from its edge
@@ -259,9 +291,11 @@ def part_contours(part, index, strength, long_side):
         if first < len(rows) - 1 and max(amounts[first:]) < 0.75 * max(amounts):
             small = even_size(max(recipe["brush"] * width, BRUSH_PER_PUSH * max(amounts[first:])))
             if small < 0.8 * size:
-                return [dict(name=label, part=kind, width=width, size=size, points=rows[:first], toward=toward),
-                        dict(name=f"{label} (近关节)", part=kind, width=width, size=small, points=rows[first:])]
-    return [dict(name=label, part=kind, width=width, size=size, points=rows, toward=toward)]
+                return [dict(name=label, part=kind, width=width, size=size, points=rows[:first], toward=toward,
+                             need=part.get("need")),
+                        dict(name=f"{label} (近关节)", part=kind, width=width, size=small, points=rows[first:],
+                             need=part.get("need"))]
+    return [dict(name=label, part=kind, width=width, size=size, points=rows, toward=toward, need=part.get("need"))]
 
 
 def raw_contour(entry, index):
@@ -304,13 +338,18 @@ def read_plan(plan, strength, width, height):
     contours, nudges, dabs = [], [], []
     for index, part in enumerate(plan.get("parts") or []):
         kind = part.get("part")
+        label = part.get("name") or f"{kind} #{index + 1}"
+        if kind not in RECIPES and kind not in POINT_RECIPES:
+            raise Fail(no_part(label, kind))
+        if part.get("need") == "none":  # judged, written down, and not done: the plan says so and so does the run
+            say(f"[NOTE] {label}: need \"none\", left as it is" + (f" ({part['why']})" if part.get("why") else ""))
+            continue
         if kind in POINT_RECIPES:
             recipe = POINT_RECIPES[kind]
-            label = part.get("name") or f"{kind} #{index + 1}"
             if not part.get("at"):
                 raise Fail(f"{label}: `{kind}` needs `at`: [x, y], its centre")
             span = as_width(part.get("width"), label)
-            wanted = recipe["dabs"] * float(part.get("strength", 1.0)) * strength
+            wanted = recipe["dabs"] * float(part.get("strength", 1.0)) * strength * part_need(part, label)
             count = max(1, math.ceil(wanted - 1e-6))
             dabs.append(dict(name=label, tool=recipe["tool"], size=even_size(recipe["size"] * span),
                              at=[float(part["at"][0]), float(part["at"][1])], count=count,
@@ -429,6 +468,21 @@ def read_picture(path):
     if image is None:
         raise Fail(f"{path} is not a picture this can read (JPEG, PNG or TIFF; convert HEIC or RAW first)")
     return image
+
+
+def read_raw(path, flags):
+    """cv2.imread for any path (OpenCV's own takes only names in the system's encoding on Windows)."""
+    try:
+        return cv2.imdecode(np.fromfile(path, np.uint8), flags)
+    except OSError:
+        return None
+
+
+def write_raw(path, image):
+    ok, data = cv2.imencode(os.path.splitext(path)[1], image)
+    if not ok:
+        raise Fail(f"could not write {path}")
+    data.tofile(path)
 
 
 def write_picture(path, image, quality=88):
@@ -567,6 +621,32 @@ def auto_views(contours, nudges, dabs, width, height, limit=1700):
     return views
 
 
+def face_boxes(contours, dabs, width, height):
+    """A square round each face the plan touched: for a clean before | after, to judge the look and not the edges."""
+    boxes = []
+    for contour in contours:
+        if contour.get("part") in FACE and contour.get("toward") is not None:
+            (x, y), half = contour["toward"], 1.1 * contour["width"]
+            boxes.append([x - half, y - half, x + half, y + half])
+    for dab in dabs:
+        (x, y), half = dab["at"], 2.4 * dab["size"]
+        boxes.append([x - half, y - half, x + half, y + half])
+    merged = True
+    while merged:  # the parts of one face overlap: one box a face
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return [clamp_box(box, width, height) for box in sorted(boxes)]
+
+
 # ==========================================
 # The engine: the measured field, the liquify, the layers
 # ==========================================
@@ -592,7 +672,7 @@ class Engine:
         if not os.path.exists(source):
             xs = np.broadcast_to(np.round(np.arange(width) * 65535.0 / max(1, width - 1)), (height, width))
             ys = np.broadcast_to(np.round(np.arange(height) * 65535.0 / max(1, height - 1))[:, None], (height, width))
-            cv2.imwrite(source, np.stack([np.zeros_like(xs), ys, xs], axis=-1).astype(np.uint16))
+            write_raw(source, np.stack([np.zeros_like(xs), ys, xs], axis=-1).astype(np.uint16))
         out = self.path("field.png")
         self.session.call("doc_open", {"path": source})
         try:
@@ -601,7 +681,7 @@ class Engine:
             self.session.call("doc_save", {"path": out})
         finally:
             self.session.call("doc_close")
-        image = cv2.imread(out, cv2.IMREAD_UNCHANGED)
+        image = read_raw(out, cv2.IMREAD_UNCHANGED)
         os.remove(out)
         if image is None or image.dtype != np.uint16:
             raise Fail("the engine did not hand back a 16-bit field picture")
@@ -754,6 +834,38 @@ def staged_name(path):
     return name
 
 
+def is_document(path):
+    return os.path.splitext(path)[1].lower() in DOCUMENTS
+
+
+def read_source(path):
+    """The picture to look at and measure: the file itself, or a layered document as PhotoCraft renders it (what is
+    visible, flattened; the document is copied first and never written)."""
+    if not is_document(path):
+        return read_picture(path)
+    need_libraries()
+    if os.path.isdir(path):
+        raise Fail(f"{path} is a folder bundle (PhotoCraft's recovery format): open it in PhotoCraft and save it as a "
+                   "file first")
+    if not os.path.isfile(path):
+        raise Fail(f"cannot read {path}")
+    engine = Engine()
+    try:
+        staged, out = engine.path(staged_name(path)), engine.path("render.png")
+        shutil.copyfile(path, staged)
+        engine.session.call("doc_open", {"path": staged})
+        try:
+            engine.session.call("doc_save", {"path": out})
+        finally:
+            engine.session.call("doc_close")
+        image = read_raw(out, cv2.IMREAD_COLOR)
+    finally:
+        engine.close()
+    if image is None:
+        raise Fail(f"PhotoCraft could not render {path}")
+    return image
+
+
 def tone_layers(tone):
     """A tone file -> [(command, name, opacity, params)]."""
     layers = tone.get("layers") if isinstance(tone, dict) else None
@@ -780,18 +892,22 @@ def new_layer(session, command, params):
     return layer
 
 
-def build_document(engine, staged, strokes, layers, jpg, pcraft, quality):
-    """The photo as a Smart Object, the liquify as its smart filter, the tone as adjustment layers above."""
+def build_document(engine, staged, strokes, layers, jpg, pcraft, quality, layered):
+    """Whatever the file holds stays below, untouched. On top: a stamp of what is visible (盖印图层) as a Smart
+    Object with the liquify as its smart filter, then the tone as adjustment layers."""
     session = engine.session
     session.call("doc_open", {"path": staged})
     try:
-        photo = session.call("doc_inspect")["activeLayer"]
-        converted = session.command("layer.smartObjects.convertToSmartObject", {"layer": photo})
-        photo = (converted.get("layer") if isinstance(converted, dict) else None) or \
-            session.call("doc_inspect")["activeLayer"]
+        if not layered:
+            session.command("layer.setProps", {"layer": session.call("doc_inspect")["activeLayer"], "name": "原图"})
+        session.command("layer.selectTop")
         if strokes:
-            session.command("filter.liquify", {"strokes": strokes, "layer": photo})
-        session.command("layer.setProps", {"layer": photo, "name": "照片 · 液化（智能滤镜）" if strokes else "照片"})
+            stamp = session.command("layer.stampVisible")["layer"]
+            converted = session.command("layer.smartObjects.convertToSmartObject", {"layer": stamp})
+            stamp = (converted.get("layer") if isinstance(converted, dict) else None) or \
+                session.call("doc_inspect")["activeLayer"]
+            session.command("filter.liquify", {"strokes": strokes, "layer": stamp})
+            session.command("layer.setProps", {"layer": stamp, "name": "液化 · 盖印（智能滤镜）"})
         for command, name, opacity, params in layers:
             layer = new_layer(session, command, params)
             session.command("layer.setProps", {"layer": layer, "name": name, "opacity": round(opacity, 4)})
@@ -827,7 +943,8 @@ def command_apply(args):
     need_libraries()
     started = time.time()
     photo_path = os.path.abspath(args.photo)
-    photo = read_picture(photo_path)
+    layered = is_document(photo_path)
+    photo = read_source(photo_path)
     height, width = photo.shape[:2]
     stem, _ = os.path.splitext(photo_path)
     out = os.path.abspath(args.out) if args.out else stem + SUFFIX + ".jpg"
@@ -836,12 +953,18 @@ def command_apply(args):
     out_stem = os.path.splitext(out)[0]
     pcraft = None if args.no_pcraft else out_stem + ".pcraft"
     sidecar, checks = out_stem + ".plan.json", out_stem + ".checks"
-    if os.path.exists(out) and os.path.samefile(out, photo_path):
-        raise Fail("--out is the photo itself: the original is never replaced")
+    for path in (out, pcraft):
+        if path and os.path.exists(path) and os.path.samefile(path, photo_path):
+            raise Fail(f"{path} is the {'document' if layered else 'photo'} itself: the original is never replaced. "
+                       "Give --out another name")
     if not os.path.isdir(os.path.dirname(out)):
         raise Fail(f"no folder {os.path.dirname(out)}")
     if not args.plan and not args.tone:
         raise Fail("nothing to do: give --plan, --tone or both")
+    if args.reference and os.path.exists(args.reference) and os.path.samefile(args.reference, photo_path):
+        say("[NOTE] --reference is the photo itself: left out of the overview. It is for another picture to set "
+            "beside the result, and may be left out")
+        args.reference = None
 
     plan = {}
     if args.plan:
@@ -855,6 +978,11 @@ def command_apply(args):
     if not 0 < args.strength <= 1.8:
         raise Fail("--strength is above 0 and at most 1.8 (1 = the plan as written)")
     contours, nudges, dabs = read_plan(plan, args.strength, width, height)
+    if args.plan and not (contours or nudges or dabs) and not layers:
+        # Judging that nothing needs doing is a result, not a failure: no reason to invent a part to get a file out.
+        say("[SUCCESS] nothing to liquify: the plan leaves every part as it is, and there is no --tone. No file "
+            "written or changed. Tell the user which parts you judged and why they need nothing")
+        return
     for contour in contours:
         for x, y, ux, uy, px in contour["points"]:
             if not (0 <= x < width and 0 <= y < height):
@@ -925,6 +1053,13 @@ def command_apply(args):
         return tiles
 
     if args.plan_only:
+        for contour in contours:
+            most = max(p[4] for p in contour["points"])
+            share = f", {100 * most / contour['width']:.1f}% of its width" if contour.get("width") else ""
+            judged = f", need \"{contour['need']}\"" if contour.get("need") else ""
+            say(f"[OK] {contour['name']}: will move up to {most:.0f} px{share}{judged}")
+        for dab in dabs:
+            say(f"[OK] {dab['name']}: {dab['tool']} x{dab['count']} at rate {dab['rate']}")
         say("[OK] plan drawn, nothing liquified. Red dots must sit on the outline, green arrows must point into the "
             "body part, each blue ring (an edge's first point) must be at the end body-parts.md names, and each "
             "yellow x (`toward`) must be inside the part. Eyes and noses are the magenta circles.")
@@ -951,7 +1086,8 @@ def command_apply(args):
                         worst = max(worst, want - got, got - 1.1 * most)  # short of its target, or past the part's most
                 percent = ""
                 if contour.get("width"):
-                    percent = f" (most {100 * max(p[4] for p in contour['points']) / contour['width']:.1f}% of width)"
+                    percent = (f" (most {100 * max(p[4] for p in contour['points']) / contour['width']:.1f}% of width"
+                               + (f", need \"{contour['need']}\"" if contour.get("need") else "") + ")")
                 say(f"[OK] {contour['name']}: brush {contour['size']}, px want>got {' '.join(cells)}{percent}")
                 report_rows.append(dict(name=contour["name"], part=contour.get("part"), size=contour["size"],
                                         want=[round(p[4], 1) for p in contour["points"]],
@@ -1015,9 +1151,10 @@ def command_apply(args):
         staged_pcraft = engine.path(os.path.basename(pcraft)) if pcraft else None
         if staged_pcraft and os.path.abspath(staged_pcraft) == os.path.abspath(staged):
             staged_pcraft = engine.path("result.pcraft")
-        say("[STEP] building the document: photo as a Smart Object, liquify as its smart filter"
-            + (f", {len(layers)} tone layers" if layers else ""))
-        build_document(engine, staged, strokes, layers, staged_jpg, staged_pcraft, args.quality)
+        say("[STEP] building the document: " + ("its layers" if layered else "the photo") + " below"
+            + (", a stamp of what is visible above with the liquify as its smart filter" if strokes else "")
+            + (f", {len(layers)} tone layers on top" if layers else ""))
+        build_document(engine, staged, strokes, layers, staged_jpg, staged_pcraft, args.quality, layered)
         result = read_picture(staged_jpg)
         if result.shape != photo.shape:
             raise Fail("the engine's picture is not the photo's size; nothing written")
@@ -1026,13 +1163,20 @@ def command_apply(args):
         label(tiles[0], "before")
         label(tiles[1], "after")
         if args.reference:
-            tiles.append(fit(read_picture(args.reference), 1100)[0])
+            tiles.append(fit(read_source(args.reference), 1100)[0])
             label(tiles[2], "reference")
         pictures = [os.path.join(checks, "overview.jpg")]
         write_picture(pictures[0], side_by_side(tiles))
         for view in views:
             pictures.append(os.path.join(checks, f"{view['name']}.jpg"))
             write_picture(pictures[-1], side_by_side(view_tiles(view, result)))
+        faces = face_boxes(contours, dabs, width, height) if dx is not None else []
+        for number, (x0, y0, x1, y1) in enumerate(faces, 1):  # nothing drawn on these: they are for the look
+            tiles, lighter = lift([fit(photo[y0:y1, x0:x1].copy(), 1100)[0], fit(result[y0:y1, x0:x1].copy(), 1100)[0]])
+            label(tiles[0], "before" + ("  (shown lighter)" if lighter else ""))
+            label(tiles[1], "after" + ("  (shown lighter)" if lighter else ""))
+            pictures.append(os.path.join(checks, "face.jpg" if len(faces) == 1 else f"face-{number}.jpg"))
+            write_picture(pictures[-1], side_by_side(tiles))
         if dx is not None:
             pictures.append(os.path.join(checks, "field.jpg"))
             write_picture(pictures[-1], heat_picture(photo, dx, dy, marks))
@@ -1066,6 +1210,10 @@ def command_apply(args):
     say("[OK] check pictures written. Read every one of them before telling anyone it is done:")
     for path in pictures:
         say(f"[READ] {path}")
+    if strokes:
+        say("[NOTE] no fault in the edges is not yet a good picture. Then judge the look on overview.jpg"
+            + (" and face.jpg" if faces else "") + " (SKILL.md step 7): still this person, nothing that looks edited, "
+            "the parts in proportion, and each part better than before. Where it is not, lower that part's need")
     size = f", {os.path.basename(pcraft)} ({os.path.getsize(pcraft) / 1e6:.0f} MB, layers kept)" if pcraft else ""
     say(f"[SUCCESS] {out}{size}; plan kept in {os.path.basename(sidecar)}; {time.time() - started:.1f}s")
 
@@ -1129,7 +1277,7 @@ def swatch_run(engine, colours, steps, name="swatches"):
     for index, rgb in enumerate(colours):
         strip[:, index * 16:(index + 1) * 16] = [int(round(v)) for v in rgb[::-1]]
     source, out = engine.path(f"{name}.png"), engine.path(f"{name}-out.png")
-    cv2.imwrite(source, strip)
+    write_raw(source, strip)
     engine.session.call("doc_open", {"path": source})
     try:
         for command, params in steps:
@@ -1137,7 +1285,9 @@ def swatch_run(engine, colours, steps, name="swatches"):
         engine.session.call("doc_save", {"path": out})
     finally:
         engine.session.call("doc_close")
-    image = cv2.imread(out, cv2.IMREAD_COLOR)
+    image = read_raw(out, cv2.IMREAD_COLOR)
+    if image is None:
+        raise Fail("the engine did not hand back the swatches")
     return [[float(v) for v in image[8, index * 16 + 8][::-1]] for index in range(len(colours))]
 
 
@@ -1165,7 +1315,7 @@ def hue_range(surround_hues, subject_hues):
 
 def command_tone(args):
     need_libraries()
-    photo, reference = read_picture(args.photo), read_picture(args.reference)
+    photo, reference = read_source(args.photo), read_source(args.reference)
     if not 0 <= args.surroundings <= 1:
         raise Fail("--surroundings is between 0 and 1")
     spec = load_json(args.pairs, "pairs file")
@@ -1299,7 +1449,7 @@ def command_tone(args):
 # ==========================================
 
 def command_grid(args):
-    image = read_picture(args.photo)
+    image = read_source(args.photo)
     view, scale, step = grid_view(image, args.box, args.side, args.step, args.brighten)
     write_picture(args.out, view, 90)
     height, width = image.shape[:2]
@@ -1312,7 +1462,7 @@ def command_grid(args):
 
 def command_probe(args):
     """The strongest steps in lightness along one row or column: a number to set beside what the eye read."""
-    image = read_picture(args.photo)
+    image = read_source(args.photo)
     height, width = image.shape[:2]
     light = cv2.cvtColor(image.astype(np.float32) / 255, cv2.COLOR_BGR2Lab)[:, :, 0]
     if (args.row is None) == (args.col is None):
@@ -1391,6 +1541,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):  # UTF-8 out whatever the system's encoding: names here are Chinese
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         main(sys.argv[1:])
     except (Fail, McpError) as error:

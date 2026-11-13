@@ -5,8 +5,10 @@
 ## 怎么和 PhotoCraft 说话
 
 - `scripts/photocraft_mcp.py` 启动 `photocraft-cli mcp --automation-read-root <临时文件夹> --automation-write-root <临时文件夹>`，按 MCP 协议在标准输入输出上收发 JSON-RPC（`initialize` → `tools/call`）。只有引擎，没有窗口。
-- 用到的 MCP 工具：`doc_open`、`doc_inspect`、`command_run`、`doc_save`、`doc_close`。引擎命令经 `command_run` 调用：`filter.liquify`、`layer.smartObjects.convertToSmartObject`、`layer.setProps`、`layer.newAdjustmentLayer.*`、`image.adjustments.*`。
+- 用到的 MCP 工具：`doc_open`、`doc_inspect`、`command_run`、`doc_save`、`doc_close`。引擎命令经 `command_run` 调用：`layer.selectTop`、`layer.stampVisible`、`layer.smartObjects.convertToSmartObject`、`filter.liquify`、`layer.setProps`、`layer.newAdjustmentLayer.*`、`image.adjustments.*`。
+- 成品文档的搭法：打开照片（或分层文档的副本）→ 选中最上面一层 → `layer.stampVisible` 把可见画面盖印成新的一层 → 转成智能对象 → `filter.liquify` 作为它的智能滤镜 → 上面加色调调整层。下面的图层一概不动。照片只有一层时，盖印出来的就是它的副本（相当于 Ctrl+J）。输入是 `.pcraft` / `.psd` 时，网格图、量色、检查图用的都是引擎渲染出的可见画面（`doc_open` 后 `doc_save` 成 PNG）。
 - 引擎只能读写那个临时文件夹：照片先复制进去，成品做好再移到照片旁边。出错时照片旁边什么都不会变。
+- 和引擎的管道固定用 UTF-8，脚本自己的输出也固定用 UTF-8。交给系统默认编码的话，中文 Windows（GBK）在引擎第一次回传中文图层名或文件名时就解码失败：读回复的线程死掉，主线程一直等（在别人的 Windows 上实际出现过，用 GBK 区域设置能复现，`tests/run.sh encoding` 测的就是它）。图片读写不用 OpenCV 自己的 `imread` / `imwrite`（Windows 上只认系统编码的路径），统一走 `imdecode` / `imencode`。
 - 环境变量 `PHOTOCRAFT_CONTROL_*` 会被去掉：这个技能从不连接正在运行的 PhotoCraft 程序。用户在 PhotoCraft 里开着同名 `.pcraft` 时，重跑之后要他自己关掉重开（或文件 › 恢复）。
 
 ## 液化笔触的规律
@@ -46,6 +48,10 @@
 画笔直径 = max(配方的最小倍数 × width, 8.5 × 最大推动距离)。8.5 倍保证边缘两侧的压缩 / 拉伸不超过约 35%，皮肤纹理和背景不会糊。
 
 limb 的"鼓出量"按每个点自己的内法线判断正负（点在首尾连线的外侧才算鼓出），不看 `toward` 落在连线的哪一侧：鼓得厉害的肢体，中轴线可能就在连线和边之间。总量在 `most` 处用 tanh 拐平，边描得长一点、短一点，不会推过验收过的最大值。
+
+每个部位的量 = 配方 × `need` × 这个部位的 `strength` × `--strength`。`need` 是"这个人需要几成"：`clear` 1、`some` 0.5、`none` 0（脚本里的 `NEEDS`）。配方的数字是在一个人身上验收的，那个人的这些部位都明显需要修，所以配方是全量、是上限；别的人按 `need` 打折。任何部位不写 `need` 时脚本警告，并按 1 算（所以旧的计划结果不变）。计划里所有部位都是 `none` 又没有调色时，脚本什么都不写，以 `[SUCCESS] nothing to liquify` 结束。
+
+为什么脸的 `need` 是让人看着判断，而不是像肢体那样从描的点里量出来：试过用"下颌那条边相对它首尾连线鼓出多少"来量。验收的那张脸鼓出脸宽的 7.9%，一张不需要修的瓜子脸约 4.7%，方向是对的；但这个数随"边从哪描到哪"变化很大，脸边被头发盖住时量到的是头发，而且只有两张脸可比。不够可靠，所以没有做成自动的。
 
 安全限制：单条边最多移动 width 的 30%，也不能超过画面长边的 5%；`strength` 合计不超过 1.8。
 

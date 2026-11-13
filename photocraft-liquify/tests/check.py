@@ -1,5 +1,5 @@
 """Checks for pcraft_liquify.py. Command line only: photocraft-cli mcp has no window.
-Usage: check.py WORKDIR PHOTO [SUITE...]     suites: pin plan grid liquify captions tone guards"""
+Usage: check.py WORKDIR PHOTO [SUITE...]     suites: pin plan grid liquify captions tone guards document encoding"""
 import hashlib
 import json
 import math
@@ -28,8 +28,9 @@ def ok(condition, label):
         failures.append(label)
 
 
-def run(work, *argv, expect=0):
-    result = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, text=True, cwd=work)
+def run(work, *argv, expect=0, env=None):
+    result = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, encoding="utf-8", errors="replace",
+                            cwd=work, env=env)
     if result.returncode != expect:
         print(result.stdout[-2500:], result.stderr[-2500:])
     shown = " ".join(a for a in argv if not a.startswith("/"))[:80]
@@ -146,6 +147,44 @@ def suite_plan(work, photo):
     rows = contours[0]["points"]
     ok(abs(rows[0][3]) < 0.08 and abs(rows[0][4] - 12) < 0.3 and abs(rows[2][3] - 0.8) < 0.01 and abs(rows[2][4] - 20) < 0.01,
        "at the picture's border a push keeps only its part along the border")
+    # `need`: how much this person needs the part, judged from the picture. The recipe is the most, not the default.
+    values, contours = amounts(dict(jaw, need="clear"))
+    ok(abs(max(values) - 17.5) < 0.6 and contours[0]["need"] == "clear", "need \"clear\" is the whole accepted amount")
+    values, contours = amounts(dict(jaw, need="some"))
+    ok(abs(max(values) - 8.75) < 0.3 and contours[0]["size"] == 200, "need \"some\" is half of it, the brush unchanged")
+    values, _ = amounts(dict(jaw, need="some", strength=1.2))
+    ok(abs(max(values) - 10.5) < 0.4, "a part's strength (the user's wording) multiplies on top of its need")
+    ok(L.part_contours(dict(jaw, need="none"), 0, 1.0, 4000) == [], "need \"none\" gives no edge at all")
+    L._warned.clear()
+    contours, _, dabs = L.read_plan({"parts": [dict(part="jaw", name="jaw left", need="none", why="slim already"),
+                                               dict(part="eye", at=[500, 500], width=100, need="none"),
+                                               dict(part="eye", at=[700, 500], width=100, need="some"),
+                                               dict(jaw, need="some")]}, 1.0, 4000, 4000)
+    ok(len(contours) == 1 and len(dabs) == 1 and dabs[0]["count"] == 1 and dabs[0]["rate"] == 80 and not L._warned,
+       "a plan may list what was judged and left alone; an eye at \"some\" is one dab, not two")
+    message = fails(L.read_plan, {"parts": [dict(jaw, need="a lot")]}, 1.0, 4000, 4000)
+    ok(message is not None and '"clear", "some" or "none"' in message, "another word for need is refused")
+    amounts(jaw)
+    amounts(dict(part="cheek", width=500, toward=[900, 1200], edge=[[1200, 1000 + 60 * i] for i in range(5)]))
+    amounts(waist)
+    L.read_plan({"parts": [dict(part="eye", at=[500, 500], width=100)]}, 1.0, 4000, 4000)
+    ok(len(L._warned) == 4 and all('no "need"' in w for w in L._warned) and "cone of the chin" in L._warned[0]
+       and "cone of the chin" not in L._warned[2],
+       "a part that does not say its need is warned about, face or not: full is not a default to fall into")
+    L._warned.clear()
+    amounts(dict(waist, need="clear"))
+    ok(not L._warned, "one that says it is not")
+    skill = os.path.dirname(TESTS)
+    example = json.load(open(os.path.join(skill, "references", "example-plan.json"), encoding="utf-8"))
+    contours, _, dabs = L.read_plan(example, 1.0, 4000, 5333)
+    far = next(c for c in contours if c["name"] == "jaw far")
+    ok(abs(max(row[4] for row in far["points"]) - 18.2) < 0.3 and len(dabs) == 2 and not any('no "need"' in w for w in L._warned),
+       "the bundled example still gives the accepted amounts (jaw 18 px of a 520 px face), every part judged \"clear\"")
+    template = json.load(open(os.path.join(skill, "assets", "plan-template.json"), encoding="utf-8"))
+    message = fails(L.read_plan, template, 1.0, 4000, 5333)
+    ok(message is not None and '"need" is' in message and all("need" in part for part in template["parts"]),
+       "the template's parts cannot run before their need is chosen")
+    L._warned.clear()
     for size, amount in ((640, 14.0), (300, 3.0), (100, 41.3)):
         stroke = L.drag(size, 1000, 1000, 1, 0, amount)
         length = stroke["points"][1][0] - stroke["points"][0][0]
@@ -175,7 +214,7 @@ def suite_grid(work, photo):
 
 def layer_names(pcraft):
     cli = photocraft_mcp.find_cli(print, print)
-    info = json.loads(subprocess.run([cli, "info", pcraft], capture_output=True, text=True, check=True).stdout)
+    info = json.loads(subprocess.run([cli, "info", pcraft], capture_output=True, encoding="utf-8", check=True).stdout)
     return [(layer.get("name"), layer.get("kind")) for layer in info.get("layers", [])]
 
 
@@ -213,11 +252,14 @@ def suite_liquify(work, photo):
        and np.abs(result[100:500, 2000:2500] - original[100:500, 2000:2500]).mean() < 1.5,
        "the picture changed at the edge and nowhere far from it")
     names = layer_names(stem + ".pcraft")
-    ok(len(names) == 1 and names[0][1] == "Smart Object" and "液化" in names[0][0],
-       f"the document is one Smart Object carrying the liquify ({names})")
+    ok(names == [("液化 · 盖印（智能滤镜）", "Smart Object"), ("原图", "Pixel")],
+       f"the document: the photo untouched below, a stamp carrying the liquify above ({names})")
     checks = sorted(os.listdir(stem + ".checks"))
     ok({"overview.jpg", "field.jpg", "report.json"} <= set(checks) and any(name[:2].isdigit() for name in checks)
        and not any(name.endswith(".plan.jpg") for name in checks), f"check pictures are written ({', '.join(checks)})")
+    face = cv2.imread(os.path.join(stem + ".checks", "face.jpg"))
+    ok(face is not None and face.shape[1] > 1.8 * face.shape[0] and "face.jpg" in text and "judge the look" in text,
+       "with a face part in the plan, a clean before | after of the face is written to judge the look by")
     run(folder, "apply", mine, "--plan", stem + ".plan.json", "--strength", "0.7", "--no-pcraft")
     milder = cv2.imread(stem + ".jpg").astype(int)
     ok(0 < np.abs(milder - original)[1400:2000, 700:1000].mean() < np.abs(result - original)[1400:2000, 700:1000].mean(),
@@ -235,7 +277,8 @@ def suite_liquify(work, photo):
        "and the measured stretch is reported with its place and the part that caused it")
     ok("of outline between the end of `arm` and `elbow` is not traced" in text, "outline left out before a joint is noted")
     views = [name for name in os.listdir(stem + ".checks") if name[:2].isdigit()]
-    ok(views and not any("waist" in name or "tiny" in name for name in views) and text.count("[READ]") == len(views) + 2,
+    ok(views and not any("waist" in name or "tiny" in name for name in views) and text.count("[READ]") == len(views) + 2
+       and not os.path.exists(os.path.join(stem + ".checks", "face.jpg")),
        f"check pictures of the earlier plan are gone, and every new one is listed to read ({', '.join(sorted(views))})")
 
 
@@ -264,7 +307,7 @@ def suite_captions(work, photo):
                write_json(os.path.join(folder, "far.json"), {"contours": [far], "captions": caption}))
     row = json.load(open(os.path.join(folder, "poster_液化.checks", "report.json")))["captions"][0]
     ok("look bent" not in text and row["moved_max"] < 1, "an edge far from the text leaves it alone, and says so")
-    part = dict(part="thigh", name="thigh", width=600, toward=[1400, 1750],
+    part = dict(part="thigh", name="thigh", need="clear", width=600, toward=[1400, 1750],
                 edge=[[800 + 0.8 * (y - 1400), y] for y in range(1400, 2101, 100)])
     text = run(folder, "apply", mine, "--plan-only", "--plan",
                write_json(os.path.join(folder, "part.json"), {"parts": [part], "captions": caption}))
@@ -317,7 +360,7 @@ def suite_tone(work, photo):
         off.append(math.hypot(a[1] - b[1], a[2] - b[2]))
     ok(max(off) <= 3.5, f"and so does the picture PhotoCraft renders with them ({max(off):.1f})")
     names = layer_names(stem + ".pcraft")
-    ok(len(names) == len(fitted["layers"]) + 1 and names[-1][1] == "Smart Object"
+    ok(len(names) == len(fitted["layers"]) + 1 and names[-1] == ("原图", "Pixel")
        and all(kind == "Adjustment" and name.startswith("色调") for name, kind in names[:-1]),
        f"tone only: the photo below, the tone layers above ({[name for name, _ in names]})")
     same = write_json(os.path.join(folder, "same.json"),
@@ -347,6 +390,18 @@ def suite_guards(work, photo):
     text = run(folder, "apply", mine, "--plan", plan, "--plan-only")
     plans = [name for name in os.listdir(stem + ".checks") if name.endswith(".plan.jpg")]
     ok(plans and not os.path.exists(stem + ".jpg"), "--plan-only draws the plan and writes no result")
+    ok("hip: will move up to 23 px, 2.6% of its width" in text, "and says how far each edge will move")
+    face = dict(part="jaw", name="jaw left", width=600, toward=[1300, 900], edge=[[1000, 800 + 50 * i] for i in range(7)])
+    text = run(folder, "apply", mine, "--plan-only", "--plan",
+               write_json(os.path.join(folder, "face.json"), {"parts": [face, dict(face, name="jaw right", need="some")]}))
+    ok('[WARN] jaw left: no "need"' in text and "jaw left: will move up to 21 px" in text
+       and 'jaw right: will move up to 10 px, 1.7% of its width, need "some"' in text and "jaw right: no" not in text,
+       "a jaw without its need is warned about before anything runs; one judged \"some\" moves half as far")
+    text = run(folder, "apply", mine, "--plan",
+               write_json(os.path.join(folder, "none.json"),
+                          {"parts": [dict(part="jaw", name="jaw left", need="none", why="a slim V face already")]}))
+    ok('[NOTE] jaw left: need "none", left as it is (a slim V face already)' in text and "[SUCCESS] nothing to liquify" in text
+       and not os.path.exists(stem + ".jpg"), "a plan that leaves everything alone is a result: said, and no file written")
     open(stem + ".jpg", "wb").write(b"someone else's file")
     text = run(folder, "apply", mine, "--plan", plan, expect=1)
     ok("not as this script last wrote it" in text and open(stem + ".jpg", "rb").read() == b"someone else's file",
@@ -367,8 +422,80 @@ def suite_guards(work, photo):
     ok("outside the" in text, "a point outside the picture is refused")
 
 
+# ---------------------------------------------------------------- a layered document as the input (engine)
+
+def suite_document(work, photo):
+    folder = os.path.join(work, "document")
+    os.makedirs(folder)
+    engine = L.Engine()
+    try:  # a document with something above the photo: a curve that lightens it
+        staged = engine.path("portrait.jpg")
+        shutil.copyfile(photo, staged)
+        engine.session.call("doc_open", {"path": staged})
+        engine.session.command("layer.newAdjustmentLayer.curves", {"points": [[0, 0], [110, 150], [255, 255]]})
+        engine.session.call("doc_save", {"path": engine.path("layered.pcraft")})
+        engine.session.call("doc_close")
+        mine = shutil.copy(engine.path("layered.pcraft"), os.path.join(folder, "layered.pcraft"))
+    finally:
+        engine.close()
+    before = sha(mine)
+    part = dict(part="hip", name="hip", width=900, toward=[1300, 1700], edge=[[800, 1400 + 100 * i] for i in range(6)])
+    plan = write_json(os.path.join(folder, "plan.json"), {"parts": [part]})
+    text = run(folder, "grid", mine, "--out", os.path.join(folder, "grid.jpg"))
+    ok("[SUCCESS]" in text and os.path.isfile(os.path.join(folder, "grid.jpg")), "grid reads a .pcraft as PhotoCraft renders it")
+    text = run(folder, "apply", mine, "--plan", plan, "--out", os.path.join(folder, "layered.jpg"), expect=1)
+    ok("never replaced" in text and sha(mine) == before, "a result whose .pcraft would be the document itself is refused")
+    run(folder, "apply", mine, "--plan", plan)
+    stem = os.path.join(folder, "layered_液化")
+    ok(sha(mine) == before and os.path.isfile(stem + ".pcraft"), "the document is not written; the result is a new one beside it")
+    if not os.path.isfile(stem + ".pcraft"):
+        return
+    names = layer_names(stem + ".pcraft")
+    ok(names[0] == ("液化 · 盖印（智能滤镜）", "Smart Object") and [kind for _, kind in names[1:]] == ["Adjustment", "Pixel"],
+       f"its layers stay below, a stamp of what is visible carries the liquify on top ({names})")
+    result, raw = cv2.imread(stem + ".jpg").astype(int), cv2.imread(photo).astype(int)
+    far = (slice(100, 500), slice(2000, 2500))
+    ok(result[far].mean() - raw[far].mean() > 8, "the stamp holds the document as it looks (the curve's lightening), not the bare photo")
+    ok(os.path.isfile(os.path.join(stem + ".checks", "overview.jpg")), "check pictures are written for it")
+
+
+# ---------------------------------------------------------------- a system whose own encoding is not UTF-8
+
+def suite_encoding(work, photo):
+    """A Chinese Windows reads pipes and prints in GBK. The engine answers in UTF-8, and the names here are Chinese:
+    the run must not depend on the system's encoding. Stood in for by a GBK locale where the system has one."""
+    locales = subprocess.run(["locale", "-a"], capture_output=True, encoding="utf-8", errors="replace").stdout.split()
+    if "zh_CN.GBK" not in locales:
+        print("  (no zh_CN.GBK locale on this system: not run)")
+        return
+    folder = os.path.join(work, "照片 工作")
+    os.makedirs(folder)
+    mine = shutil.copy(photo, os.path.join(folder, "人像·棚拍（一）.jpg"))
+    plan = write_json(os.path.join(folder, "plan.json"), {"parts": [
+        dict(part="hip", name="hip", width=900, toward=[1300, 1700], edge=[[800, 1400 + 100 * i] for i in range(6)])]})
+    tone = os.path.join(os.path.dirname(TESTS), "assets", "tone-cool-pink.json")
+    env = dict(os.environ, LC_ALL="zh_CN.GBK", LANG="zh_CN.GBK")
+    env.pop("PYTHONUTF8", None)
+    env.pop("PYTHONIOENCODING", None)
+    result = subprocess.run([sys.executable, SCRIPT, "apply", mine, "--plan", plan, "--tone", tone], capture_output=True,
+                            cwd=folder, env=env, timeout=300)
+    try:
+        text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    stem = os.path.join(folder, "人像·棚拍（一）_液化")
+    if result.returncode != 0:
+        print(result.stdout[-1500:], result.stderr[-1500:])
+    ok(result.returncode == 0 and all(os.path.isfile(stem + ext) for ext in (".jpg", ".pcraft", ".plan.json")),
+       "under a GBK locale, with Chinese file, folder and layer names, the run completes")
+    ok(text is not None and "[SUCCESS]" in text and "人像·棚拍（一）_液化.jpg" in text, "and what it prints is UTF-8")
+    names = layer_names(stem + ".pcraft") if os.path.isfile(stem + ".pcraft") else []
+    ok([name for name, _ in names] == ["色调 · 偏冷粉", "色调 · 环境去黄", "液化 · 盖印（智能滤镜）", "原图"],
+       f"and the layer names arrive whole ({[name for name, _ in names]})")
+
+
 SUITES = {"pin": suite_pin, "plan": suite_plan, "grid": suite_grid, "liquify": suite_liquify, "captions": suite_captions,
-          "tone": suite_tone, "guards": suite_guards}
+          "tone": suite_tone, "guards": suite_guards, "document": suite_document, "encoding": suite_encoding}
 
 if __name__ == "__main__":
     work, photo, wanted = sys.argv[1], sys.argv[2], sys.argv[3:] or list(SUITES)

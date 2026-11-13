@@ -3,6 +3,7 @@
   "A real plan: a 4000 x 5333 portrait, seated, three-quarter face, one hand under the jaw, the other arm bent and",
   "pressed against the body, captions printed across the hips. Accepted by the client at these strengths.",
   "Read it for the shape of a plan; the coordinates belong to that one photo.",
+  "This sitter's jaw corner stood out, the arm was pressed flat against the body and the waist was straight: need \"clear\" throughout. Another person gets their own judgement (SKILL.md step 2); a face with no jaw corner standing out gets \"none\".",
   "Face width 520, upper arm 345 (visible band), forearm 330, waist 822, thigh about 800.",
   "The right hip and thigh were left alone: three captions sit on that edge, so the right waist ends above them",
   "with ease_end. Left of the captions the pushes are level (direction [1, 0]).",
@@ -12,6 +13,7 @@
   {
    "part": "jaw",
    "name": "jaw far",
+   "need": "clear",
    "width": 520,
    "toward": [
     1800,
@@ -51,6 +53,7 @@
   {
    "part": "cheek",
    "name": "cheek near",
+   "need": "clear",
    "width": 520,
    "toward": [
     1800,
@@ -78,6 +81,7 @@
   {
    "part": "eye",
    "name": "eye left",
+   "need": "clear",
    "at": [
     1617,
     2463
@@ -87,6 +91,7 @@
   {
    "part": "eye",
    "name": "eye right",
+   "need": "clear",
    "at": [
     1874,
     2381
@@ -96,6 +101,7 @@
   {
    "part": "upper_arm",
    "name": "upper arm",
+   "need": "clear",
    "width": 345,
    "toward": [
     1650,
@@ -163,6 +169,7 @@
   {
    "part": "elbow",
    "name": "elbow",
+   "need": "clear",
    "width": 330,
    "toward": [
     1880,
@@ -198,6 +205,7 @@
   {
    "part": "forearm",
    "name": "forearm",
+   "need": "clear",
    "width": 330,
    "toward": [
     1860,
@@ -225,6 +233,7 @@
   {
    "part": "waist",
    "name": "waist left",
+   "need": "clear",
    "width": 822,
    "toward": [
     1860,
@@ -300,6 +309,7 @@
   {
    "part": "thigh",
    "name": "thigh left",
+   "need": "clear",
    "width": 800,
    "toward": [
     1700,
@@ -349,6 +359,7 @@
   {
    "part": "waist",
    "name": "waist right",
+   "need": "clear",
    "width": 822,
    "toward": [
     1860,

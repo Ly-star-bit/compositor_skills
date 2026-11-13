@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tests for photocraft-liquify, command line only (photocraft-cli mcp has no window).
 #   tests/run.sh                    every suite
-#   tests/run.sh plan tone          some suites (pin plan grid liquify captions tone guards)
+#   tests/run.sh plan tone          some suites (pin plan grid liquify captions tone guards document encoding)
 #   PYTHON=/path/to/python3 tests/run.sh
 # Without PYTHON, scripts/python.sh picks (or once makes) a Python with numpy and OpenCV.
 # The test photo is the NASA portrait compositor-retouch's own tests use, from their cache when it is there.

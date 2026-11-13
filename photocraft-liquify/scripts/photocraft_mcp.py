@@ -49,7 +49,8 @@ def sibling_module():
 
 def cli_version(path):
     try:
-        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=60).stdout
+        out = subprocess.run([path, "--version"], capture_output=True, encoding="utf-8", errors="replace",
+                             timeout=60).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
     parts = out.split()
@@ -102,8 +103,8 @@ def download_cli(say):
         unpacked = os.path.join(work, "x")
         subprocess.run(["ditto", "-x", "-k", archive, unpacked], check=True, capture_output=True)
         binary = os.path.join(unpacked, f"photocraft-cli-{VERSION}-macos-universal", "photocraft-cli")
-        check = subprocess.run(["spctl", "--assess", "--type", "install", "-vv", binary], capture_output=True, text=True,
-                               timeout=120)
+        check = subprocess.run(["spctl", "--assess", "--type", "install", "-vv", binary], capture_output=True,
+                               encoding="utf-8", errors="replace", timeout=120)
         verdict = (check.stdout + check.stderr).strip().replace("\n", "; ")
         if check.returncode != 0:
             raise McpError(f"Gatekeeper did not accept the downloaded photocraft-cli ({verdict}). Its notarization "
@@ -128,9 +129,12 @@ class Mcp:
         environment = {k: v for k, v in os.environ.items() if not k.startswith("PHOTOCRAFT_CONTROL")}
         self.timeout = timeout
         self.log = tempfile.TemporaryFile()
+        # The engine speaks UTF-8 whatever the system's own encoding is. Left to the system's (GBK on a Chinese
+        # Windows), the first reply with a layer or file name outside ASCII cannot be decoded.
         self.process = subprocess.Popen(
             [cli, "mcp", "--automation-read-root", root, "--automation-write-root", root],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True, env=environment)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, encoding="utf-8", errors="replace",
+            env=environment)
         self.replies = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
         self.next_id = 0
@@ -139,9 +143,13 @@ class Mcp:
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     def _read(self):
-        for line in self.process.stdout:
-            self.replies.put(line)
-        self.replies.put(None)
+        try:
+            for line in self.process.stdout:
+                self.replies.put(line)
+        except (OSError, ValueError) as error:  # never leave the caller waiting on a reader that has stopped
+            self.replies.put(error)
+        finally:
+            self.replies.put(None)
 
     def _send(self, message):
         try:
@@ -165,6 +173,8 @@ class Mcp:
                 line = self.replies.get(timeout=self.timeout)
             except queue.Empty:
                 raise McpError(f"photocraft-cli mcp gave no reply to {method} in {self.timeout}s") from None
+            if isinstance(line, Exception):
+                raise McpError(f"could not read photocraft-cli mcp's reply to {method}: {line}")
             if line is None:
                 raise McpError(f"photocraft-cli mcp exited during {method}: {self._stderr()}")
             try:
