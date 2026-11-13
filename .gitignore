@@ -24,8 +24,9 @@ venv/
 /*.png
 /*.tif
 /*.tiff
-# What photocraft-liquify writes beside a photo, and a work folder beside it
+# What photocraft-liquify and photocraft-dodge-burn write beside a photo, and a work folder beside it
 *.plan.json
+*.light.json
 *.checks/
 *.patches.jpg
 /work/
