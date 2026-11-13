@@ -32,8 +32,8 @@ BUILDER = os.environ.get("RETOUCH_BUILDER") or os.path.join(os.path.dirname(SKIL
 STALE_FILE = os.environ.get("PCRAFT_RETOUCH_STALE") or os.path.join(os.path.dirname(LINK_FILE), "photocraft-stale.json")
 
 # Which builder group (retouch_builder.GROUPS) each module's layers belong to.
-MODULE_GROUP = {"freq_sep": "freq_sep", "delicious_skin": "skin", "sculpt": "light", "neutral_gray": "light",
-                "dual_curves": "light", "eyes": "features", "look": "look", "glow": "glow", "grain": "grain",
+MODULE_GROUP = {"freq_sep": "freq_sep", "delicious_skin": "skin", "sculpt": "light", "ai_light": "light",
+                "neutral_gray": "light", "dual_curves": "light", "eyes": "features", "look": "look", "glow": "glow", "grain": "grain",
                 "inspection": "inspection"}
 # What a module already made, by how the layer or folder name begins (as the builder skips them).
 MADE_BY = {"freq_sep": ("🎚️", "低频", "高频"), "sculpt": ("🗿",), "neutral_gray": ("🩶",), "eyes": ("👁️",),
@@ -105,6 +105,12 @@ def parse_args(argv, RB):
     p.add_argument("--sculpt", action="store_true")
     p.add_argument("--neutral-gray", action="store_true")
     p.add_argument("--dual-curves", action="store_true")
+    p.add_argument("--ai-light", nargs="?", const="auto", type=RB.light_spec, metavar="NEEDS|look",
+                   help="a first pass of dodge & burn to check and paint on: skin=some,circles=clear,folds=none "
+                        "(clear, some, none; auto when left out), or look: only measure and write light_look.jpg")
+    p.add_argument("--ai-light-on", choices=sorted(RB.LIGHT_KINDS), help="gray (default) or curves")
+    p.add_argument("--ai-light-redo", action="store_true",
+                   help="make the document's AI light pass again; what was painted on it since is lost")
     p.add_argument("--eyes", action="store_true")
     p.add_argument("--look", choices=sorted(RB.LOOKS))
     p.add_argument("--glow", action="append", nargs="?", const="mist", metavar="STYLE[:COLOR[,COLOR]]")
@@ -163,6 +169,9 @@ def module_flags(args, key):
         return ["--look", args.look]
     if key == "glow":
         return [part for spec in args.glow for part in ("--glow", spec)]
+    if key == "ai_light":
+        spec = args.ai_light if args.ai_light == "look" else ",".join(f"{item}={need}" for item, need in args.ai_light.items())
+        return ["--ai-light", spec] + (["--ai-light-on", args.ai_light_on] if args.ai_light_on else [])
     return ["--" + key.replace("_", "-")]
 
 
@@ -207,6 +216,8 @@ def run_builder(photo, comp, flags, label):
     for line in result.stdout.splitlines():
         if line.startswith("[WARN] "):
             warn(line[7:], once=True)
+        elif line.startswith(("[OK] AI 光影", "[SKIP] --ai-light")):  # what it measured and chose: the user's to read
+            say(line)
     if result.returncode != 0:
         lines = (result.stdout + "\n" + result.stderr).splitlines()
         errors = [line[8:] for line in lines if line.startswith("[Error] ")] or [line for line in lines if line][-3:]
@@ -691,13 +702,37 @@ class Run:
                 for node in same:
                     self.redo_skin(node, manual, keep_settings=False)
                 return
+        old = []
+        if key == "ai_light":
+            look = args.ai_light == "look"
+            old = [n for n in self.doc.flat(top) if n.name.startswith(("🩶", "🌑", "☀️")) and RB.LIGHT_MARK in n.name]
+            if old and not look:
+                if not args.ai_light_redo:
+                    say(f"[SKIP] --ai-light: the document has its {RB.LIGHT_MARK} pass ({old[0].name.split(' (')[0]}). Brush "
+                        "on it, or lower its opacity. To make it again with other needs add --ai-light-redo (what was "
+                        "painted on it since is lost), or delete it in PhotoCraft first")
+                    return
+                had = "gray" if any(n.name.startswith("🩶") for n in old) else "curves"
+                if args.ai_light_on and args.ai_light_on != had:
+                    raise Fail(f"the document's {RB.LIGHT_MARK} pass is on {RB.LIGHT_KINDS[had]}; --ai-light-redo makes it "
+                               f"again there (leave out --ai-light-on {args.ai_light_on}), or delete it in PhotoCraft first")
+                args.ai_light_on = had
         group = MODULE_GROUP[key]
         anchor, into = self.anchor_for(group, top)
         with self.doc.only_below(anchor.id, include_self=True):
             base = os.path.join(self.staging, f"base-{key}.png")
-            self.doc.export(base)
+            shown = [n for n in old if n.visible]  # the pass is measured without the pass
+            for n in shown:
+                self.doc.run("layer.setProps", {"layer": n.id, "visible": False})
+            try:
+                self.doc.export(base)
+            finally:
+                for n in shown:
+                    self.doc.run("layer.setProps", {"layer": n.id, "visible": True})
             comp = self.builder(base, key, module_flags(args, key))
             records = comp.top()[1:]  # not the builder's copy of the photo
+            if key == "ai_light" and not records:  # a look, or every need none: nothing to put in; what is there stays
+                return
             if key == "dual_curves":
                 present = [p for p in DUAL_CURVES if any(name.startswith(p) for name in names)]
                 records = [r for r in comp.walk(records) if not r.get("isGroup") and not r["name"].startswith(tuple(present))
@@ -721,6 +756,8 @@ class Run:
                 below = anchor.id
                 for record in records:
                     below = convert.build(record, below)
+        for n in old:  # the pass made again: the earlier one goes
+            self.doc.run("layer.delete", {"layer": n.id})
         self.added += convert.made
         self.changed = True
 

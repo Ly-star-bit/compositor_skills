@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tests for photocraft-retouch, command line only (photocraft-cli serve has no window).
 #   tests/run.sh                    every suite
-#   tests/run.sh looks glow         some suites (dr5 looks glow append refresh errors)
+#   tests/run.sh looks glow         some suites (dr5 looks glow append light refresh errors)
 #   PYTHON=/path/to/python3 tests/run.sh
 # The test photo is the NASA portrait compositor-retouch's own tests use, from their cache when it is there.
 set -u

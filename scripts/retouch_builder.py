@@ -28,6 +28,10 @@ On top:
   --sculpt          3D sculpt: a live Tonal Contrast layer on the face's planes (format 18+; before that a
                     mid-frequency contrast pixel layer in Soft Light)
   --neutral-gray    50% gray in Soft Light for dodge & burn with the brush
+  --ai-light        a first pass of dodge & burn, painted on a neutral gray layer (or, --ai-light-on curves, on the
+                    masks of two Curves) for the user to check and go on from: skin patches evened out, the shade
+                    under the eyes lifted, the smile lines' creases lightened, each as far as its need says
+                    (skin=some,circles=clear,folds=none; auto when left out); `--ai-light look` only measures
   --dual-curves     brighten and darken Curves adjustments in Luminosity, black masks
   --eyes            eye brilliance: a live Sharpen layer masked to the irises (format 19+; before that a
                     sharpened pixel copy)
@@ -2137,6 +2141,8 @@ class Project:
         self.paintings = {}      # masks painted in from the landmarks, for the check image
         self.glow_check = None   # the frame before and after the glow, for the check image
         self.look_check = None   # the frame before and after a color grade, for the check image
+        self.light_check = None  # the face before and after the AI light pass, and what it painted
+        self.light_look = None   # the face as --ai-light look measured it
         self.use_vision = True
         self.skin_changed = False
         self._base = None
@@ -3801,6 +3807,380 @@ def module_dual_curves(project, args):
     project.put("light", records)
 
 
+# ==========================================
+# AI 光影 (A first pass of dodge & burn, painted on the user's own kind of layer)
+# ==========================================
+# What a retoucher does by hand on the neutral gray layer or the two curves, as a first pass for the user to check
+# and paint on: patches of skin lighter or darker than the skin round them evened out, the shade under the eyes
+# lifted towards the cheek below, the smile lines' creases lightened. Lightness only, skin only, and never all of
+# what was measured: each of the three goes as far as its need says.
+LIGHT_MARK = "AI 光影"  # in the name of every layer this makes: how a second run knows its own from the user's
+LIGHT_ITEMS = ("skin", "circles", "folds")
+LIGHT_LABELS = {"skin": "肤色不匀", "circles": "黑眼圈", "folds": "法令纹"}
+LIGHT_NEEDS = {"clear": 1.0, "some": 0.5, "none": 0.0}
+LIGHT_NEED_LABELS = {"clear": "全量", "some": "一半", "none": "不修"}
+# The share of what was measured that "clear" works with: a face evened out all the way is a mask. What comes off
+# in the end is less (tests/bench.py light: about a quarter of the patches' unevenness and of the shade under the eyes,
+# a fifth of the creases' depth), since each is painted smoothly, capped, and kept off features and edges.
+LIGHT_FULL = {"skin": 0.9, "circles": 0.5, "folds": 0.5}
+LIGHT_CAP = 0.06   # no pixel is lifted or lowered by more than this (0-1): 15 levels
+LIGHT_EDGE = 0.05  # a patch further than this from its surroundings is a feature (a mole, a crease, an edge), not a blotch
+LIGHT_STEP = (0.04, 0.10)  # where the lightness steps by this much over the patch's own width, it is shape: left
+LIGHT_CREASE = 0.10  # what a crease's lightening levels off at, at share 1: a deep one is made shallower, not filled
+# What `auto` makes of a measurement, in levels (0-255): under the first nothing is done, from the second on the
+# whole share. Set on the test portraits (tests/bench.py light prints each one's numbers).
+LIGHT_AUTO = {"skin": (1.5, 3.5), "circles": (4.0, 12.0), "folds": (5.0, 28.0)}
+# Under the eyes, darker than this is not a dark circle but eye makeup or a cast shadow: auto leaves it (the six test
+# portraits read 3 to 24 there, a smoky eye 39), and lifting it takes saying so.
+LIGHT_NOT_CIRCLES = 30.0
+LIGHT_KINDS = {"gray": "中性灰", "curves": "双曲线"}
+
+
+def light_spec(text):
+    """--ai-light's value: `look`, or a need for each item ({item: clear | some | none | auto}); items left out,
+    and a bare flag, are auto."""
+    text = (text or "auto").strip().lower()
+    if text == "look":
+        return "look"
+    spec = dict.fromkeys(LIGHT_ITEMS, "auto")
+    if text == "auto":
+        return spec
+    for part in text.split(","):
+        item, _, need = part.partition("=")
+        item, need = item.strip(), need.strip()
+        if item not in spec or need not in (*LIGHT_NEEDS, "auto"):
+            raise argparse.ArgumentTypeError(
+                f"{text!r}: write look, auto, or needs such as skin=some,circles=clear,folds=none (items: "
+                f"{', '.join(LIGHT_ITEMS)}; needs: clear, some, none, auto)")
+        spec[item] = need
+    return spec
+
+
+def light_zones(shape, faces):
+    """From the landmarks, on an image of `shape`: the shade under the eyes and the smile lines, feathered (0-1),
+    and for each eye (its zone, the skin round the zone that its lightness is compared with, the eye's opening
+    with room for the lashes, the eye's width). The smile lines run from beside the nostrils to past the mouth corners, bowing outwards."""
+    lines, bags, eyes = np.zeros(shape, np.uint8), np.zeros(shape, np.uint8), []
+    widths = []
+    for face in landmark_faces(faces):
+        marks = face.marks
+        eye = eye_width(marks)
+        across, down, tilt = _face_axes(marks)
+        if "nose" in marks and "outerLips" in marks:
+            nose, lips = marks["nose"], marks["outerLips"]
+            for side in (-1.0, 1.0):
+                outward = across * side
+                wing = nose[np.argmax(nose @ outward)]
+                corner = lips[np.argmax(lips @ outward)]
+                start = wing + outward * 0.2 * eye + down * 0.05 * eye
+                end = corner + outward * 0.3 * eye + down * 0.35 * eye
+                bow = (start + end) / 2 + outward * 0.2 * eye
+                curve = [(1 - t) ** 2 * start + 2 * (1 - t) * t * bow + t ** 2 * end for t in np.linspace(0, 1, 24)]
+                _line(lines, np.array(curve), 0.45 * eye)
+        clear = odd(max(3, eye / 6))
+        for side in ("left", "right"):
+            points = marks[f"{side}Eye"]
+            middle = points.mean(axis=0)
+            lower_lid = float(((points - middle) @ down).max())
+            crescent = np.zeros(shape, np.uint8)
+            _ellipse_at(crescent, middle + down * (lower_lid + 0.22 * eye), (0.55 * eye, 0.28 * eye), tilt)
+            opening = np.zeros(shape, np.uint8)
+            _fill(opening, points)
+            opening = cv2.dilate(opening, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (clear, clear)))
+            zone = crescent & ~opening
+            # What the zone's lightness is compared with: the skin right round it, below the eye. (The cheek's
+            # apple further down is the face's highlight: against that every eye socket reads as a dark circle.)
+            around = odd(0.7 * eye)
+            ring = cv2.dilate(crescent, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (around, around))) & ~crescent & ~opening
+            rows, columns = np.nonzero(ring)
+            above = (columns - middle[0]) * down[0] + (rows - middle[1]) * down[1] < 0.6 * lower_lid
+            ring[rows[above], columns[above]] = 0
+            bags |= zone
+            eyes.append((zone, ring, opening, eye))
+        widths.append(eye)
+    width = float(np.median(widths)) if widths else 1.0
+    return (_feathered(bags, width * 0.12).astype(np.float32) / 255.0,
+            _feathered(lines, width * 0.15).astype(np.float32) / 255.0, eyes)
+
+
+def light_measure(under, skin8, faces, face_width):
+    """What there is to even out, lift and lighten on `under` (RGB 0-1, what the layer will sit on): for each item
+    the lightness (0-1, signed) that taking all of it away would add, on the crop `box`, and how much of it there
+    is, in levels (0-255). Returns (box, maps, levels, zones) with zones = (territory of the skin item, shade under
+    the eyes, smile lines) for the check image."""
+    box = crop_box(skin8, face_width * 0.3)
+    y = _lum(under[box]).astype(np.float32)
+    weight = skin8[box].astype(np.float32) / 255.0
+    shape = y.shape
+    local = [shifted(face, -box[1].start, -box[0].start) for face in faces]
+    bags, folds, eyes = light_zones(shape, local)
+    maps = {item: np.zeros(shape, np.float32) for item in LIGHT_ITEMS}
+    levels = dict.fromkeys(LIGHT_ITEMS, 0.0)
+
+    # Skin: patches a little lighter or darker than the skin round them, the size a brush on the gray layer evens
+    # out. Finer than `fine` is texture and stays; wider than `coarse` is the face's form (a cheek's roundness) and
+    # stays; a patch far from its surroundings is a feature and stays, and so does anything along a line where the
+    # light itself steps (the jaw against the neck, the side of the nose, a strand of hair across the forehead):
+    # that is shape, and evening it out flattens the face. The face only (cheeks, forehead, chin), away from the
+    # mask's own edges and from eyes, nose and mouth; and the two zones below belong to their own items, so a need
+    # of none there leaves them alone.
+    fine, coarse = max(2.0, face_width / 150.0), max(6.0, face_width / 36.0)
+    wide = masked_blur(y, weight, coarse)
+    band = masked_blur(y, weight, fine) - wide
+    size = np.abs(band)
+    keep = np.clip((2.2 * LIGHT_EDGE - size) / (1.2 * LIGHT_EDGE), 0, 1)
+    keep = keep * keep * (3 - 2 * keep)
+    step = np.hypot(cv2.Sobel(wide, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(wide, cv2.CV_32F, 0, 1, ksize=3)) / 8.0 * coarse
+    even = np.clip((LIGHT_STEP[1] - step) / (LIGHT_STEP[1] - LIGHT_STEP[0]), 0, 1)  # the lightness's change over `coarse`
+    keep = keep * even * even * (3 - 2 * even)
+    landmarked = landmark_faces(local)
+    features = np.zeros(shape, np.uint8)
+    if landmarked:
+        features = feature_mask(shape, landmarked, ("eyes", "nose", "mouth"))
+    reach = odd(3 * coarse)
+    inner = cv2.erode(((weight > 0.9) & (features == 0) & (inner_face(shape, local) > 0)).astype(np.uint8) * 255,
+                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (reach, reach)))
+    inner = cv2.GaussianBlur(inner, (0, 0), coarse / 2).astype(np.float32) / 255.0
+    territory = inner * np.clip(1.0 - np.maximum(bags, folds), 0, 1)
+    maps["skin"] = -band * keep * territory
+    solid = (territory > 0.8) & (size < 2.2 * LIGHT_EDGE)
+    if solid.sum() > 200:
+        levels["skin"] = 255.0 * float(size[solid].mean())
+
+    if eyes:
+        # Under the eyes: how much darker the zone is than the skin round it, read broadly, so the lift raises the
+        # whole shade and the lid's fine lines keep their own contrast.
+        darker = []
+        for zone, ring, opening, eye in eyes:
+            reference = y[(ring > 0) & (weight > 0.6)]
+            if reference.size < 30:
+                continue
+            level = float(np.median(reference))
+            clear = 1.0 - opening.astype(np.float32) / 255.0  # lashes and the eye itself are not what is lifted
+            smooth = masked_blur(y, clear, max(1.0, 0.15 * eye))
+            short = np.clip(level - smooth, 0, 0.3)
+            soft = _feathered(zone, eye * 0.12).astype(np.float32) / 255.0
+            maps["circles"] = np.maximum(maps["circles"], short * soft)
+            core = zone > 0
+            if core.sum() > 30:
+                darker.append(float(short[core].mean()))
+        if darker:
+            levels["circles"] = 255.0 * float(np.mean(darker))
+
+        # The creases: darker than the cheek round them at the crease's own scale. Only the dark line is lightened,
+        # and less the deeper it runs: the fold stays where it is, shallower.
+        eye = float(np.median([e[3] for e in eyes]))
+        crease = masked_blur(y, weight, max(1.0, 0.04 * eye)) - masked_blur(y, weight, max(4.0, 0.35 * eye))
+        depth = np.clip(-crease, 0, 0.3)
+        maps["folds"] = LIGHT_CREASE * np.tanh(depth / LIGHT_CREASE) * folds
+        core = folds > 0.5
+        if core.sum() > 30:
+            levels["folds"] = 255.0 * float(np.percentile(depth[core], 90))
+    return box, maps, levels, (territory, bags, folds)
+
+
+def light_auto(item, level):
+    low, high = LIGHT_AUTO[item]
+    if item == "circles" and level >= LIGHT_NOT_CIRCLES:
+        return "none"
+    return "none" if level < low else "some" if level < high else "clear"
+
+
+def light_gray(under, delta):
+    """The Soft Light gray (0-1; 0.5 changes nothing) that adds `delta` to the lightness of `under` (RGB 0-1)."""
+    lifted = np.where(under <= 0.25, ((16 * under - 12) * under + 4) * under, np.sqrt(under))
+    up = np.maximum(_lum(lifted - under), 1e-3)          # what white adds to the lightness here
+    down = np.maximum(_lum(under * (1 - under)), 1e-3)   # what black takes
+    return np.clip(0.5 + np.where(delta >= 0, delta / (2 * up), delta / (2 * down)), 0.1, 0.9)
+
+
+def light_masks(under, delta):
+    """The masks (0-1) of the darkening and the brightening curve, Luminosity, that add `delta` to the lightness of
+    `under`: (burn, dodge)."""
+    out = []
+    for points, sign in ((BURN_CURVE, -1.0), (DODGE_CURVE, 1.0)):
+        table = _curve([{"x": x, "y": y} for x, y in points], np.arange(256)) / 255.0
+        curved = np.interp(under * 255.0, np.arange(256), table).astype(np.float32)
+        reach = np.maximum(sign * (_lum(curved) - _lum(under)), 1e-3)  # what the whole curve does to the lightness
+        out.append(np.clip(sign * delta / reach, 0, 1))
+    return out
+
+
+def _dithered(values, seed):
+    """Floats (in 8-bit units) to 8 bits without bands: a smooth ramp a few levels high would otherwise step."""
+    noise = np.random.default_rng(seed).random(values.shape, dtype=np.float32)
+    return np.clip(np.floor(values + noise), 0, 255).astype(np.uint8)
+
+
+def light_summary(needs):
+    return " · ".join(f"{LIGHT_LABELS[item]} {LIGHT_NEED_LABELS[needs[item]]}" for item in LIGHT_ITEMS)
+
+
+def light_levels(levels, needs=None):
+    """The measurements as one line, with what auto makes of each."""
+    words = {"skin": "skin patches differ from the skin round them by {:.1f} levels on average",
+             "circles": "under the eyes it is {:.1f} levels darker than the skin round it",
+             "folds": "the smile lines' creases are {:.1f} levels deep"}
+    parts = []
+    for item in LIGHT_ITEMS:
+        low, high = LIGHT_AUTO[item]
+        chosen = f"{item}={needs[item]}" if needs else f"auto would take {light_auto(item, levels[item])}"
+        scale = f"under {low:g} none, from {high:g} clear"
+        if item == "circles":
+            scale += f", from {LIGHT_NOT_CIRCLES:g} eye makeup or a cast shadow, which auto leaves"
+        parts.append(f"{words[item].format(levels[item])} ({scale}; {chosen})")
+    return "; ".join(parts)
+
+
+def module_ai_light(project, args):
+    """A first pass of dodge & burn painted on a neutral gray layer, or on the masks of the two curves, for the
+    user to check, take back and paint on. `look`: only the measurements and a picture to judge the needs by."""
+    spec = args.ai_light
+    faces = project.faces()
+    if not faces:
+        say("[SKIP] --ai-light: no face found, so there is no skin to measure; paint the light by hand")
+        return
+    mine = existing(project, ("🩶", "🌑", "☀️"), says=LIGHT_MARK)
+    look = spec == "look"
+    if mine and not look and not args.ai_light_redo:
+        say(f"[SKIP] --ai-light: the project has its {LIGHT_MARK} pass ({mine[0]['name'].split(' (')[0]}). Brush on it, "
+            "or lower its opacity. To make it again with other needs add --ai-light-redo (what was painted on it "
+            "since is lost), or delete it in the app first")
+        return
+    kind = args.ai_light_on or "gray"
+    if mine and not look:
+        had = "gray" if any(str(r["name"]).startswith("🩶") for r in mine) else "curves"
+        if args.ai_light_on and had != kind:
+            raise BuildError(f"the project's {LIGHT_MARK} pass is on {LIGHT_KINDS[had]}; --ai-light-redo makes it again "
+                             f"there (leave out --ai-light-on {kind}), or delete it in the app to make one on "
+                             f"{LIGHT_KINDS[kind]}")
+        kind = had
+    under = project.composite_before(mine[0]) if mine else project.composite_under("light")
+    skin8 = project.skin()[0]
+    box, maps, levels, zones = light_measure(under, skin8, faces, project.face_width())
+    if not landmark_faces(faces):
+        warn("no landmarks (Apple Vision not used), so the shade under the eyes and the smile lines can't be placed: "
+             "only the skin's patches are evened out", once=True)
+    if look:
+        project.light_look = dict(box=box, under=under[box], zones=zones)
+        say(f"[OK] {LIGHT_MARK}, measured only, nothing added: {light_levels(levels)}")
+        return
+    needs = {item: (light_auto(item, levels[item]) if spec[item] == "auto" else spec[item]) for item in LIGHT_ITEMS}
+    if not landmark_faces(faces):
+        needs["circles"] = needs["folds"] = "none"
+    say(f"[OK] {LIGHT_MARK}: {light_levels(levels, needs)}")
+    if all(need == "none" for need in needs.values()):
+        say("[SKIP] --ai-light: every need is none, so nothing is painted: this light needs no first pass"
+            + (f". The {LIGHT_MARK} pass the project has is left as it is; delete it in the app if it should go" if mine else ""))
+        return
+    part = sum(LIGHT_FULL[item] * LIGHT_NEEDS[needs[item]] * maps[item] for item in LIGHT_ITEMS)
+    part = np.clip(part, -LIGHT_CAP, LIGHT_CAP).astype(np.float32)
+    part[np.abs(part) < 0.5 / 255.0] = 0.0  # under half a level nothing is painted: the layer stays plain there
+    delta = np.zeros((project.height, project.width), np.float32)
+    delta[box] = part
+    summary = light_summary(needs)
+    touched = np.abs(part) > 0
+    seed = project.width * 31 + project.height
+    if kind == "gray":
+        gray = np.full(delta.shape, 128, np.uint8)
+        painted = _dithered(128.0 + (light_gray(under[box], part) - 0.5) * 255.0, seed)
+        gray[box] = np.where(touched, painted, 128)
+        name = f"🩶 中性灰 · {LIGHT_MARK} ({summary} · 50% 灰柔光 · 可擦改)"
+        pixels = np.dstack([gray] * 3)
+        if mine:
+            stage_pixels(project, mine[0], pixels)
+            mine[0]["name"] = name
+            project.refreshed.append((mine[0], "重做"))
+        else:
+            project.put("light", [project.pixel_layer(name, Image.fromarray(pixels), blend="Soft Light")])
+        after = blend(under[box], np.dstack([gray[box]] * 3).astype(np.float32) / 255.0, np.ones(part.shape, np.float32),
+                      "Soft Light")
+    else:
+        burn, dodge = light_masks(under[box], part)
+        masks, after = [], under[box]
+        for (prefix, word, points), mask, offset in ((("🌑", "压暗", BURN_CURVE), burn, 1), (("☀️", "提亮", DODGE_CURVE), dodge, 2)):
+            full = np.zeros(delta.shape, np.uint8)
+            full[box] = np.where(mask > 0, _dithered(mask * 255.0, seed + offset), 0)
+            masks.append((prefix, f"{prefix} 双曲线 · {word} · {LIGHT_MARK} ({summary} · 曲线 · 明度 · 蒙版可擦改)", points, full))
+            after = blend(after, adjusted(after, curves(points)), full[box].astype(np.float32) / 255.0, "Luminosity")
+        if mine:
+            for prefix, name, _, full in masks:
+                record = next((r for r in mine if str(r["name"]).startswith(prefix) and r.get("maskFile")), None)
+                if record is None:
+                    raise BuildError(f"the project's {LIGHT_MARK} pass lacks its {prefix} curve (or its mask): delete "
+                                     "what is left of it in the app and run again")
+                project.stage_png(Image.fromarray(full), record["maskFile"])
+                record["name"] = name
+                project.refreshed.append((record, "重做"))
+        else:
+            project.put("light", [project.adjustment_layer(name, curves(points), blend="Luminosity",
+                                                           mask=Image.fromarray(full))
+                                  for _, name, points, full in masks])
+    got = _lum(after) - _lum(under[box])
+    off = float(np.abs(got - part)[touched].mean()) * 255.0 if touched.any() else 0.0
+    say(f"[OK] {LIGHT_MARK} on {LIGHT_KINDS[kind]}: lifts up to {255 * max(0.0, float(part.max())):.0f} levels, lowers up "
+        f"to {255 * max(0.0, float(-part.min())):.0f}, over {100 * float(touched.mean()):.0f}% of the face's crop; lands "
+        f"within {off:.1f} levels of what was meant")
+    project.light_check = dict(box=box, before=under[box], after=after, delta=part, zones=zones)
+
+
+def observed(rgb, middle=None, skin=None):
+    """`rgb` (0-1) as the black & white observation folder shows it: this face's skin at middle gray, twice the
+    contrast round it. Returns the view (8-bit RGB) and the middle used, so a before and an after share one."""
+    gray = _black_white(to8(rgb), OBSERVE_BW).astype(np.float32)
+    gray = gray if gray.ndim == 2 else gray[..., 0]
+    if middle is None:
+        chosen = gray[skin > 200] if skin is not None and (skin > 200).sum() > 100 else gray
+        middle = float(np.median(chosen))
+    view = np.clip(128.0 + OBSERVE_CONTRAST * (gray - middle), 0, 255).astype(np.uint8)
+    return np.dstack([view] * 3), middle
+
+
+def light_pictures(project, folder):
+    """The check images of the AI light pass (or of its `look`): each a pair side by side, large enough to judge
+    a lift of a few levels."""
+    written = []
+
+    def pair(name, left, right, labels):
+        fit = min(1.0, 1100.0 / left.shape[0], 800.0 / left.shape[1])
+        size = (max(1, round(left.shape[1] * fit)), max(1, round(left.shape[0] * fit)))
+        strip = 52
+        sheet = Image.new("RGB", (size[0] * 2 + 8, size[1] + strip), "white")
+        draw = ImageDraw.Draw(sheet)
+        for column, (image, label) in enumerate(zip((left, right), labels)):
+            sheet.paste(Image.fromarray(cv2.resize(image, size, interpolation=cv2.INTER_AREA)), (column * (size[0] + 8), strip))
+            points = 34  # a label stays over its own picture, however narrow the face's crop
+            while points > 14 and draw.textlength(label, font=_label_font(points)) > size[0] - 20:
+                points -= 2
+            draw.text((column * (size[0] + 8) + 12, 6 + (34 - points) // 2), label, fill=(40, 40, 40), font=_label_font(points))
+        written.append(os.path.join(folder, name))
+        sheet.save(written[-1], quality=92)
+
+    def zones_view(rgb, zones):
+        view = to8(rgb).astype(np.float32)
+        for zone, color in zip(zones, ((40, 220, 90), (0, 200, 255), (255, 140, 0))):
+            tint = np.clip(zone, 0, 1)[..., None] * 0.45
+            view = view * (1 - tint) + np.array(color, np.float32) * tint
+        return np.clip(view, 0, 255).astype(np.uint8)
+
+    skin = project.skin()[0]
+    if project.light_look:
+        look = project.light_look
+        view, _ = observed(look["under"], skin=skin[look["box"]])
+        pair("light_look.jpg", view, zones_view(look["under"], look["zones"]),
+             ("观察组黑白：看明暗斑驳", "绿 肤色不匀 · 青 眼下 · 橙 法令纹"))
+    if project.light_check:
+        check = project.light_check
+        before, after = check["before"], check["after"]
+        pair("light.jpg", to8(before), to8(after), ("修前", f"修后（{LIGHT_MARK}）"))
+        seen, middle = observed(before, skin=skin[check["box"]])
+        pair("light_bw.jpg", seen, observed(after, middle)[0], ("修前 · 观察组黑白", "修后 · 观察组黑白"))
+        painted = np.clip(128.0 + check["delta"] * 255.0 * 4.0, 0, 255).astype(np.uint8)
+        pair("light_map.jpg", np.dstack([painted] * 3), zones_view(before, check["zones"]),
+             ("AI 画的 ×4：亮 = 提亮，暗 = 压暗", "绿 肤色不匀 · 青 眼下 · 橙 法令纹"))
+    return written
+
+
 def eye_radius(project):
     """The unsharp mask's radius for the eyes, by the resolution."""
     return max(2.0, round(min(project.width, project.height) / 1500.0, 1))
@@ -4077,6 +4457,7 @@ MODULES = [
     ("freq_sep", module_freq_sep),
     ("delicious_skin", module_delicious_skin),
     ("sculpt", module_sculpt),
+    ("ai_light", module_ai_light),  # before the gray and the curves: its layer is one of theirs, to go on painting on
     ("neutral_gray", module_neutral_gray),
     ("dual_curves", module_dual_curves),
     ("eyes", module_eyes),
@@ -4164,6 +4545,7 @@ def write_checks(project, path):
                           cv2.resize(after, size, interpolation=cv2.INTER_AREA)])
         written.append(os.path.join(folder, name))
         Image.fromarray(pair).save(written[-1], quality=90)
+    written += light_pictures(project, folder)
     if not (project.skin_changed or project.paintings or project.spots):
         return written
 
@@ -4315,6 +4697,19 @@ def parse_args(argv):
                              "(format 18+; a mid-frequency contrast pixel layer in a project before that)")
     parser.add_argument("--neutral-gray", action="store_true", help="50%% gray Soft Light layer for dodge & burn")
     parser.add_argument("--dual-curves", action="store_true", help="brighten/darken Curves adjustments, black masks")
+    parser.add_argument("--ai-light", nargs="?", const="auto", type=light_spec, metavar="NEEDS|look",
+                        help="a first pass of dodge & burn painted for the user to check and go on from: skin patches "
+                             "evened out (skin), the shade under the eyes lifted (circles), the smile lines' creases "
+                             "lightened (folds). NEEDS says how far each goes, as skin=some,circles=clear,folds=none "
+                             "(clear, some = half, none; left out or `auto`: by what is measured). `look` only "
+                             "measures and writes light_look.jpg to judge the needs by")
+    parser.add_argument("--ai-light-on", choices=sorted(LIGHT_KINDS),
+                        help="what --ai-light paints on: gray (default; a 50%% gray Soft Light layer) or curves (the "
+                             "masks of a darkening and a brightening Curves layer). --ai-light-redo keeps to what the "
+                             "pass is on")
+    parser.add_argument("--ai-light-redo", action="store_true",
+                        help="make the project's AI light pass again in place, with this run's needs; what was "
+                             "painted on it since is lost")
     parser.add_argument("--eyes", action="store_true",
                         help="eye brilliance: a live Sharpen layer through a mask painted on the irises (format 19+; "
                              "a sharpened pixel copy in a project before that)")
@@ -4392,7 +4787,8 @@ def run(args):
             if args.progress:
                 say(f"[STEP] {number}/{len(steps)} {key}")
             build(project, args)
-        if args.init or wanted:  # a render alone only reads the project
+        only_look = wanted == {"ai_light"} and args.ai_light == "look" and not args.init
+        if (args.init or wanted) and not only_look:  # a render alone, and a look, only read the project
             project.commit()
     except BaseException:
         project.discard()
@@ -4412,8 +4808,8 @@ def run(args):
         image = Image.fromarray(project.render())
         image.save(target, **({"quality": 92} if target.lower().endswith((".jpg", ".jpeg")) else {}))
         say(f"[OK] Rendered {target} ({image.width}x{image.height}, {time.time() - rendered:.1f}s)")
-    if (project.skin_changed or project.paintings or project.spots or project.glow_check or project.look_check) \
-            and not args.no_checks:
+    if (project.skin_changed or project.paintings or project.spots or project.glow_check or project.look_check
+            or project.light_check or project.light_look) and not args.no_checks:
         if args.progress:
             say("[STEP] checks")
         for check in write_checks(project, path):

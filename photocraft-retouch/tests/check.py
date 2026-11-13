@@ -286,6 +286,63 @@ def suite_append(work, photo):
         pc.stop()
 
 
+def suite_light(work, photo):
+    print("== light: the AI light pass looked at, added to a document, made again, and on the two curves")
+    target = os.path.join(work, "light.pcraft")
+    needs = "skin=clear,circles=clear,folds=clear"
+    out = skill(work, "--init", photo, "--pcraft", target, "--neutral-gray", "--ai-light", "look")
+    ok("measured only, nothing added" in out and os.path.isfile(os.path.join(work, "light.checks", "light_look.jpg")),
+       "a look on a new document says what it measured and writes light_look.jpg")
+    before = open(target, "rb").read()
+    out = skill(work, "--pcraft", target, "--ai-light", "look", "--no-checks")
+    ok("(unchanged)" in out and open(target, "rb").read() == before, "a look at a saved document leaves the file as it was")
+    out = skill(work, "--pcraft", target, "--ai-light", needs)
+    ok("[OK] AI 光影: skin patches differ" in out and "skin=clear" in out and "lands within" in out,
+       "adding the pass passes on what was measured, chosen and how close it lands")
+    ok(all(os.path.isfile(os.path.join(work, "light.checks", name)) for name in ("light.jpg", "light_bw.jpg", "light_map.jpg")),
+       "and its check images sit beside the document")
+    comp = os.path.join(work, "light-ref.comp")
+    for argv in (["--init", photo, "--neutral-gray"], ["--ai-light", needs]):
+        r = subprocess.run([sys.executable, BUILDER, "--comp", comp, "--no-checks", *argv], capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+    pc = Pc(work)
+    try:
+        pc.open(target)
+        grays = [(layer, parent) for layer, parent in pc.nodes() if layer["name"].startswith("🩶")]
+        ok(len(grays) == 2 and RB.LIGHT_MARK in grays[0][0]["name"] and RB.LIGHT_MARK not in grays[1][0]["name"]
+           and all(parent is not None and parent["name"].startswith("🌓") for _, parent in grays),
+           "the pass is a gray layer of its own in the light group, above the one painted by hand")
+        diff(pc.render(os.path.join(work, "pc_light.png")), builder_render(comp, os.path.join(work, "rb_light.png")),
+             "the pass on gray, as PhotoCraft draws it and as the builder does", 3, 0.1)
+        count = len(pc.nodes())
+        pc.close()
+        out = skill(work, "--pcraft", target, "--ai-light", "--no-checks")
+        ok("[SKIP] --ai-light: the document has its AI 光影 pass" in out and "(unchanged)" in out, "run again, it is not painted twice")
+        out = skill(work, "--pcraft", target, "--ai-light", "skin=some,circles=none,folds=none", "--ai-light-redo", "--no-checks")
+        pc.open(target)
+        names = [layer["name"] for layer, _ in pc.nodes()]
+        passes = [name for name in names if RB.LIGHT_MARK in name]
+        ok(len(names) == count and len(passes) == 1 and "肤色不匀 一半 · 黑眼圈 不修 · 法令纹 不修" in passes[0],
+           f"--ai-light-redo replaces the pass with one at the new needs ({passes})")
+        pc.close()
+        skill(work, "--pcraft", target, "--ai-light", "--ai-light-redo", "--ai-light-on", "curves", "--no-checks", expect=1)
+        curves = os.path.join(work, "light-curves.pcraft")
+        skill(work, "--init", photo, "--pcraft", curves, "--ai-light", needs, "--ai-light-on", "curves", "--no-checks")
+        comp = os.path.join(work, "light-curves-ref.comp")
+        r = subprocess.run([sys.executable, BUILDER, "--init", photo, "--comp", comp, "--no-checks", "--ai-light", needs,
+                            "--ai-light-on", "curves"], capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        pc.open(curves)
+        pair = [layer for layer, _ in pc.nodes() if RB.LIGHT_MARK in layer["name"]]
+        ok(len(pair) == 2 and {layer["name"][0] for layer in pair} == {"🌑", "☀"} and all(layer.get("hasMask") for layer in pair),
+           "on curves: a darkening and a brightening curve, each with its painted mask")
+        diff(pc.render(os.path.join(work, "pc_light_curves.png")), builder_render(comp, os.path.join(work, "rb_light_curves.png")),
+             "the pass on the two curves, as PhotoCraft draws it and as the builder does", 4, 0.1)
+        pc.close()
+    finally:
+        pc.stop()
+
+
 def suite_refresh(work, photo):
     print("== refresh: work on the high-frequency layer, save, recompute")
     target = os.path.join(work, "refresh.pcraft")
@@ -672,7 +729,7 @@ def flat_layers(layers):
         yield from flat_layers(layer.get("children") or layer.get("layers") or [])
 
 
-SUITES = {"dr5": suite_dr5, "looks": suite_looks, "glow": suite_glow, "append": suite_append,
+SUITES = {"dr5": suite_dr5, "looks": suite_looks, "glow": suite_glow, "append": suite_append, "light": suite_light,
           "refresh": suite_refresh, "errors": suite_errors, "link": suite_link}
 
 if __name__ == "__main__":

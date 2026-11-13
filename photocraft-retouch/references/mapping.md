@@ -6,7 +6,7 @@
 
 | Compositor（脚本写的） | PhotoCraft | 误差 |
 |---|---|---|
-| 像素层（原图、高低频、中性灰、辉光） | 像素层，`doc.place` 加 `smartObject:false`，原样放入 | 0 |
+| 像素层（原图、高低频、中性灰、AI 光影画好的中性灰、辉光） | 像素层，`doc.place` 加 `smartObject:false`，原样放入 | 0（AI 光影：最大 1） |
 | 磨皮层 | 智能对象：`--refresh` 和重做时用 `doc.replaceSmartObject` 换内容，图层 id、名字、不透明度、蒙版都不变 | 0 |
 | 蒙版（8 位灰度 PNG） | 把 PNG 的红通道读成选区（`select.loadSelection`），再"显示选区"；1×1 的纯黑、纯白用"隐藏全部"、"显示全部" | 256 级全保留，0 |
 | 文件夹 | 穿透的组，不透明度 100%；Compositor 文件夹的不透明度乘到组里每一层上（见下文） | 见调色 |

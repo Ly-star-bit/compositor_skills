@@ -3,11 +3,13 @@ name: compositor-retouch
 description: >-
   Builds layered portrait-retouching projects for Compositor, the macOS image editor (.comp packages), and renders
   them headless: DR5-style skin smoothing (automatic skin mask or brushed on by hand), neutral gray and dual curves
-  for dodge & burn, 3D sculpt, eye brilliance, frequency separation, color grades
+  for dodge & burn, an AI first pass of that dodge & burn painted on them for the user to check (skin patches evened,
+  dark circles lifted, smile lines lightened), 3D sculpt, eye brilliance, frequency separation, color grades
   (airy, film, cool-fair, creamy, HK, B&W), glow (pro-mist, halation, dream; any color), grain and observation
   folders, as layers, live adjustment layers and masks painted in from Apple Vision face landmarks and segmentation,
   which the user keeps editing in Compositor. Use when the user mentions Compositor or a .comp file, or wants a
-  retouching setup for a portrait: 修图工程, 人像精修, 磨皮, DR5, 手动磨皮, 中性灰, 双曲线, 重算, 骨相, 眼神光, 调色,
+  retouching setup for a portrait: 修图工程, 人像精修, 磨皮, DR5, 手动磨皮, 中性灰, 双曲线, AI 修光影, 自动中性灰,
+  帮我刷一遍光影, 黑眼圈, 法令纹, 重算, 骨相, 眼神光, 调色,
   滤镜, 日系, 胶片, 冷白皮, 奶油肌, 港风, 黑白, 辉光, 黑柔, 柔焦, 高低频, 观察组, 渲染预览.
 ---
 
@@ -38,6 +40,10 @@ python3 "$B" --init "/path/portrait.jpg" --comp "/path/Portrait.comp" --preset s
 
 # 常用：中性灰调光影 + DR5 磨皮（黑蒙版，手动刷出）+ 观察组；新建或已有工程都行，再跑一次不会重复加层
 python3 "$B" --comp "/path/Portrait.comp" --preset daily
+
+# AI 先刷一遍光影：先看（不改工程），再按看到的定档去画；流程见下文「AI 光影」
+python3 "$B" --comp "/path/Portrait.comp" --ai-light look
+python3 "$B" --comp "/path/Portrait.comp" --ai-light skin=some,circles=clear,folds=none
 
 # 磨皮轻一点（只影响磨皮；--strength 管辉光和调色）
 python3 "$B" --comp "/path/Portrait.comp" --preset daily --skin-strength 0.6
@@ -91,6 +97,7 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 | `--sculpt` | 3D 骨相：Tonal Contrast 实时调整层（格式 18 起；更早的工程是中频反差像素层） | 调整层 · 预涂鼻梁、颧骨、眉骨、下巴 · 「🌓 光影」 | 白画笔加强、黑画笔收回；双击改强度 |
 | `--neutral-gray` | 50% 中性灰 | 像素 · 柔光 · 「🌓 光影」 | 浅灰、深灰画笔涂亮、涂暗 |
 | `--dual-curves` | 双曲线：提亮、压暗各一层 | 曲线调整层 · 明度 · 黑蒙版 · 「🌓 光影」 | 低流量白画笔做 dodge & burn |
+| `--ai-light [档位\|look]` | AI 光影：第一遍 dodge & burn（肤色不匀、黑眼圈、法令纹）；`look` 只量不画。见下文 | 画好的中性灰层（`--ai-light-on curves`：画好蒙版的两层曲线）· 「🌓 光影」 | 开观察组检查；降不透明度、擦掉、接着刷 |
 | `--eyes` | 眼神光：Sharpen 实时调整层（格式 19 起；更早的工程是锐化像素层） | 调整层 · 70% · 预涂虹膜 · 「😊 五官」 | 调不透明度 |
 | `--look 风格` | 调色：`airy` 日系清透、`film` 胶片暖调、`cool-fair` 冷白皮、`creamy` 奶油肌、`hk` 港风、`bw` 黑白 | 两三个实时调整层 · 「🎬 调色 · 风格」文件夹，不透明度 = `--strength` | 调文件夹不透明度；双击各层微调 |
 | `--glow [风格[:颜色[,颜色]]]` | 辉光：`mist` 黑柔（默认）、`halation` 胶片光晕、`dream` 梦幻柔焦；颜色 `natural` `white` `gold` `film` `red` `rose` `lavender` `ice` `teal` 或 `#RRGGBB`，两个颜色是双色；可写多次叠加 | 滤色像素层（`dream` 是高斯模糊调整层）· 白蒙版 · 「🌟 辉光」 | 调不透明度；黑画笔擦掉不想发光处（如眼睛）；颜色叠加里换色 |
@@ -107,6 +114,41 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 算法、阈值、和 DR5 插件的对比、辉光颜色表、各参数的取值细节：modules.md「模块」。
 
+## AI 光影：先替用户刷一遍（`--ai-light`）
+
+用户说"帮我修一下光影 / AI 先刷一遍中性灰 / 双曲线 / 去黑眼圈 / 淡化法令纹"时用。脚本把第一遍 dodge & burn 直接画在一层 50% 灰的柔光层上（加 `--ai-light-on curves` 时画在压暗、提亮两层曲线的蒙版上），用户打开工程接着检查、擦改。它只改明暗，只动脸上的皮肤，分三项：
+
+| 项 | 做什么 | 脚本量的数（0–255 级） |
+|---|---|---|
+| `skin` 肤色不匀 | 把比周围略亮、略暗的小块匀掉；毛孔纹理、脸的立体感、痣和纹路不动 | 小块和周围平均差多少 |
+| `circles` 黑眼圈 | 把眼下的暗影整体提亮一些 | 眼下比它周围的皮肤暗多少 |
+| `folds` 法令纹 | 把法令纹那条暗线提亮一些：纹还在，只是浅了 | 暗线有多深 |
+
+每一项修几成分三档：`clear` 全量、`some` 一半、`none` 不修；不写的项是 `auto`（按量到的数定档）。每个人不一样，量到的数只是参考，**看过图再定**：
+
+1. **先看，不改工程**：`python3 "$B" --comp X.comp --ai-light look`（新建工程时加 `--init 照片`）。它打印三项的数和 `auto` 会选的档，写出 `<名称>.checks/light_look.jpg`。用 Read 读：左边是观察组的黑白视图（明暗斑驳看这里），右边标出三项各自的区域（绿 = 肤色不匀，青 = 眼下，橙 = 法令纹）。
+2. **定档**。多数情况接受 `auto`；下面这些要你来改：
+   - 眼下的暗是眼妆（烟熏、画出来的卧蚕）或造型光的影子，不是黑眼圈 → `circles=none`（数超过 30 时 `auto` 已经当成眼妆不修）。
+   - 人在笑，法令纹深是表情 → 最多 `folds=some`；用户点名"淡化法令纹"才用 `clear`。
+   - 用户说皮肤已经修过、已经很干净 → `skin=none`。
+   - 青色、橙色的区域没有落在眼下、法令纹上（侧脸、被头发或手挡住）→ 那一项 `none`，并告诉用户。
+   - 用户对某一项说过话，以用户为准；在两档之间拿不准，选轻的那一档。
+3. **画**：`python3 "$B" --comp X.comp --ai-light skin=some,circles=clear,folds=none`。三项都是 `none` 时脚本不加图层并说明，这是合格的结果。
+4. **检查，三张图都用 Read 读**：`light.jpg`（修前｜修后）、`light_bw.jpg`（观察组黑白视图里的修前｜修后）、`light_map.jpg`（AI 画了什么，放大 4 倍，亮 = 提亮、暗 = 压暗｜三项的区域）。逐条回答：
+   - 还像本人吗？脸有没有变平：颧骨、鼻梁、下颌的明暗还在吗？
+   - 眼下有没有被提成一块发白、发灰的"补丁"？法令纹是变浅了，而不是没了？
+   - 提亮和压暗都落在皮肤上吗？落到眉毛、睫毛、嘴唇、头发上就是区域错了。
+   - 修后和修前差别不大不是毛病：这只是第一遍。
+5. **过头或落错了地方**：换档原地重做 `--ai-light skin=some,circles=some,folds=none --ai-light-redo`，再读三张图。最多两轮；仍拿不准，交轻的一版并说明。
+6. **汇报**：三项各量到多少、各用了哪一档、检查图里看到了什么、哪一项没修和原因。告诉用户怎么自己检查：打开工程，点亮「🔍 观察组 · 黑白 + 反差」（没有就加 `--inspection`），开关名字里带「AI 光影」的那一层对比；觉得重就降它的不透明度；局部不要的用 50% 灰的画笔盖掉（曲线版在蒙版上涂黑），不够的地方照常用浅灰、深灰画笔接着刷。
+
+须知：
+- 工程里已有这一遍时再跑会 `[SKIP]`，因为用户可能已经在上面画过。`--ai-light-redo` 会丢掉他在这一层上画的东西：隔了一段时间再回到这个工程时，先问用户。
+- 这一层本身就是中性灰层（或那一对曲线），同一次运行里 `--neutral-gray`、`--dual-curves`、预设都不会再建空的。工程里已有用户手刷的中性灰时，AI 这一遍另起一层放在它上面，不碰用户画的。
+- 全量也只去掉量到的一部分（斑驳和眼下的暗约四分之一，法令纹的深度约五分之一）：这是给用户接着修的底，不是成品。
+- 只改明暗，颜色（黑眼圈发青、泛红）不处理。中性灰柔光提亮会让那里的颜色略微发灰，手刷中性灰也一样；介意就用 `--ai-light-on curves`（明度混合，不带偏色）。
+- 没找到人脸时 `[SKIP]`；没有 Vision 关键点时只做 `skin`。多张脸用同一组档位。算法和各个阈值见 modules.md「AI 光影」。
+
 ## 图层文件夹
 
 新图层按用途放进文件夹，自下而上：🎚️ 高低频 → 🧴 皮肤（这两个紧贴原图）→ 🌓 光影 → 😊 五官 → 🎬 调色（每种风格一个文件夹）→ 🌟 辉光 → 胶片颗粒 → 观察组（最顶，这两个不放文件夹）。文件夹是穿透的，不改变画面；文件夹的不透明度乘到里面每一层。文件夹和图层都靠名字开头的 emoji 识别，改名时保留 emoji（手动磨皮层保留开头的 🔥✋）。以前版本的工程（图层没有分文件夹）照样能追加。放置规则细节见 modules.md「图层文件夹」。
@@ -117,14 +159,14 @@ python3 "$B" --comp "/path/Portrait.comp" --check
 
 ## 检查图
 
-脚本在工程旁写 `<名称>.checks/`（不在 `.comp` 包里）并打印路径。**每次生成后用 Read 工具看 `overview.jpg`**，一张图里是修前、修后、皮肤蒙版、五官预涂；加了 `--look`、`--glow` 时再看 `look.jpg`、`glow.jpg`（整幅的加前、加后对比）。图例：绿色是皮肤蒙版，洋红是被排除的头发，蓝线圈出磨皮避开的五官，黄框是人脸，红圈是祛痘处；青色是虹膜、橙色是骨相的预涂，白点是关键点。确认蒙版没盖到头发或衣服，红圈没落在五官或发际线上，预涂落在对应五官上，修后不发假，再把发现告诉用户。磨皮是默认的手动刷出（黑蒙版）时，修后图里还看不出磨皮，这是正常的：要等用户在 Compositor 里刷。效果过重就用更小的 `--strength` 重新生成；关键点明显错位就加 `--no-vision` 重做，并告诉用户这些蒙版需要手涂。
+脚本在工程旁写 `<名称>.checks/`（不在 `.comp` 包里）并打印路径。**每次生成后用 Read 工具看 `overview.jpg`**，一张图里是修前、修后、皮肤蒙版、五官预涂（只跑了 AI 光影、调色、辉光这类不动皮肤的模块时没有这张，看它们各自的图：AI 光影是 `light*.jpg`，见上文）；加了 `--look`、`--glow` 时再看 `look.jpg`、`glow.jpg`（整幅的加前、加后对比）。图例：绿色是皮肤蒙版，洋红是被排除的头发，蓝线圈出磨皮避开的五官，黄框是人脸，红圈是祛痘处；青色是虹膜、橙色是骨相的预涂，白点是关键点。确认蒙版没盖到头发或衣服，红圈没落在五官或发际线上，预涂落在对应五官上，修后不发假，再把发现告诉用户。磨皮是默认的手动刷出（黑蒙版）时，修后图里还看不出磨皮，这是正常的：要等用户在 Compositor 里刷。效果过重就用更小的 `--strength` 重新生成；关键点明显错位就加 `--no-vision` 重做，并告诉用户这些蒙版需要手涂。
 
 ## 须知
 
-- 重复运行不会堆第二套图层：高低频（换了 `--blur-radius` 且没手修过时按新半径重做）、中性灰、骨相、实时的眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（`重做 · 保留蒙版`），双曲线只补缺的那一层，只有辉光会叠加。没写 `auto`/`manual` 时，工程里已有的磨皮是哪种就重做哪种。
+- 重复运行不会堆第二套图层：高低频（换了 `--blur-radius` 且没手修过时按新半径重做）、中性灰、骨相、实时的眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（`重做 · 保留蒙版`），双曲线只补缺的那一层，AI 光影已有就跳过（要重做加 `--ai-light-redo`），只有辉光会叠加。没写 `auto`/`manual` 时，工程里已有的磨皮是哪种就重做哪种。
 - 像素层是快照，调整层是实时的。骨相、眼神光在格式 18/19 起的工程里是实时调整层，更早的工程里是像素层，脚本会说明；新建工程的版本跟着内容走（含眼神光 19，`--8bit` 固定 11），已有工程保持版本，在 Compositor 里保存一次就升到最新格式（1.5.x 是 20，1.6 是 21）。
 - 写入是安全的：新文件先放在包内隐藏文件夹 `.retouch/`，校验通过后几毫秒内一起落地，Compositor 只重载一次；运行中工程若被 Compositor 保存过，脚本报错退出、不改动，再跑一次即可。
-- `app/` 里是这个脚本的 macOS 图形界面「Compositor 工具」：自动认出 Compositor 正在编辑的工程、一键精修、批量处理，不用和 AI 对话。用户想点按钮时告诉他们，不要替用户启动它，也不要打开访达。
-- 用户要的是 PhotoCraft（`.pcraft` 文档）时，用 `photocraft-retouch/` 里的技能（它有自己的 SKILL.md，同样的模块，用这个脚本计算图层）；「Compositor 工具」也有 PhotoCraft 标签页。
+- `app/` 里是这个脚本的 macOS 图形界面「Compositor 工具」：自动认出 Compositor 正在编辑的工程、一键精修、批量处理，不用和 AI 对话（AI 光影还没有做进界面，只能通过脚本用）。用户想点按钮时告诉他们，不要替用户启动它，也不要打开访达。
+- 用户要的是 PhotoCraft（`.pcraft` 文档）时，用 `photocraft-retouch/` 里的技能（它有自己的 SKILL.md，同样的模块，用这个脚本计算图层）；「Compositor 工具」也有 PhotoCraft 标签页。在 PhotoCraft 里让 AI 刷中性灰、双曲线，用 `photocraft-dodge-burn/`（通过 PhotoCraft 的 MCP 用它自己的画笔画，不依赖 Apple Vision，Windows 也能用）；液化用 `photocraft-liquify/`。
 - 皮肤蒙版、祛痘、关键点都是近似：侧脸、遮挡、很小的脸、最深的肤色可能不准，请看检查图。调色是全图的，皮肤也跟着变。渲染复现了像素层的混合和常见调整层；动感模糊、添加杂色、颜色叠加以外的图层效果、剪贴蒙版、旋转的图层没有复现，会警告。
 - 修改脚本后运行 `tests/run.sh`（说明见 [tests/README.md](tests/README.md)）。其余须知见 modules.md「须知」。

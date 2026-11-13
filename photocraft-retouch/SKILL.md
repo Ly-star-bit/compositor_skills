@@ -7,7 +7,9 @@ description: >-
   for dodge & burn, 3D sculpt, eye brilliance, frequency separation, color grades airy/film/cool-fair/creamy/HK/B&W,
   glow, grain, observation folders) as PhotoCraft layers, masks, adjustment layers and smart filters the user keeps
   editing in PhotoCraft. Use when the user mentions PhotoCraft or a .pcraft file, or wants a retouching setup to open
-  in PhotoCraft: PhotoCraft 修图工程, PhotoCraft 人像精修 / 磨皮 / 中性灰 / 双曲线 / 高低频 / 调色 / 辉光, .pcraft 重算, 渲染预览.
+  in PhotoCraft: PhotoCraft 修图工程, PhotoCraft 人像精修 / 磨皮 / 中性灰 / 双曲线 / 高低频 / 调色 / 辉光, .pcraft 重算,
+  渲染预览. When the user wants the AI to paint the dodge & burn itself (AI 修光影, 帮我刷中性灰, 黑眼圈, 法令纹), use
+  photocraft-dodge-burn instead.
 ---
 
 # PhotoCraft 人像精修工程
@@ -40,6 +42,10 @@ python3 "$P" --init "/path/portrait.jpg" --pcraft "/path/Portrait.pcraft" --pres
 # 常用：中性灰 + DR5 磨皮 + 观察组；新建或已有文档都行，再跑一次不会重复加层
 python3 "$P" --pcraft "/path/Portrait.pcraft" --preset daily
 
+# AI 先刷一遍光影：先看（不改文档），再按看到的定档去画；流程见下文「AI 光影」
+python3 "$P" --pcraft "/path/Portrait.pcraft" --ai-light look
+python3 "$P" --pcraft "/path/Portrait.pcraft" --ai-light skin=some,circles=clear,folds=none
+
 # 追加模块、调色、辉光（已有文档：先让用户在 PhotoCraft 里 ⌘S）
 python3 "$P" --pcraft "/path/Portrait.pcraft" --look film --strength 0.7
 python3 "$P" --pcraft "/path/Portrait.pcraft" --glow mist:gold,rose
@@ -63,6 +69,7 @@ python3 "$P" --pcraft "/path/Portrait.pcraft" --render
 | `--sculpt` | 「🌓 光影」组：3D 骨相，盖印的智能对象 + 高反差保留智能滤镜 · 柔光 · 预涂鼻梁、颧骨、眉骨、下巴 | 白画笔加强、黑画笔收回；双击智能滤镜改半径 |
 | `--neutral-gray` | 「🌓 光影」组：50% 中性灰像素层 · 柔光 | 浅灰、深灰画笔涂亮、涂暗 |
 | `--dual-curves` | 「🌓 光影」组：提亮、压暗两个曲线调整层 · 明度 · 黑蒙版 | 低流量白画笔做 dodge & burn |
+| `--ai-light [档位\|look]` | 「🌓 光影」组：AI 光影，第一遍 dodge & burn（肤色不匀、黑眼圈、法令纹）画好的中性灰像素层 · 柔光；`--ai-light-on curves` 时是画好蒙版的压暗、提亮两个曲线调整层 | 开观察组检查；降不透明度；50% 灰（或在蒙版上涂黑）擦掉不要的；接着刷 |
 | `--eyes` | 「😊 五官」组：眼神光，盖印的智能对象 + USM 锐化 · 70% · 预涂虹膜 | 调不透明度；双击智能滤镜改锐化量 |
 | `--look 风格` | 「🎬 调色 · 风格」组：曲线调整层 + 两个颜色查找层（按 Compositor 算法烘焙的 3D LUT），强度记在每层的不透明度上 | 调各层不透明度；要拖滑块就自己加一层色彩平衡、色相/饱和度 |
 | `--glow [风格[:颜色[,颜色]]]` | 「🌟 辉光」组：`mist`、`halation` 各是一个滤色组，里面是正常模式的像素层 + 颜色叠加；双色是带蒙版的子组；`dream` 是盖印的智能对象 + 高斯模糊 · 滤色 | 调不透明度；黑画笔擦掉不想发光处；在里面那层的颜色叠加里换颜色（别用"将内部效果混合成组"，它会让整个文档改用 CPU 重绘） |
@@ -71,10 +78,18 @@ python3 "$P" --pcraft "/path/Portrait.pcraft" --render
 
 调色、辉光的风格和颜色，各模块的算法、阈值，见 compositor-retouch 的 `references/modules.md`（上一级文件夹），两边一样。
 
+## AI 光影（`--ai-light`）
+
+**在 PhotoCraft 里让 AI 刷光影，优先用旁边的 photocraft-dodge-burn 技能**：它通过 PhotoCraft 的 MCP 用 PhotoCraft 自己的画笔一笔一笔画，不依赖 Apple Vision，Windows 也能用。这里的 `--ai-light` 是另一种做法：脚本把整层算好再放进文档，肤色不匀画得更细，但只在 Mac 上三项齐全；用户已经在用本技能搭工程、明确要这种做法时才用。**流程、三项（`skin` 肤色不匀、`circles` 黑眼圈、`folds` 法令纹）怎么定档、三张检查图怎么看、怎么向用户汇报，都按上一级 compositor-retouch 的 SKILL.md「AI 光影」一节做**，把 `--comp` 换成 `--pcraft`：先 `--ai-light look` 读 `light_look.jpg`，再定档去画，然后读 `light.jpg`、`light_bw.jpg`、`light_map.jpg`。和 Compositor 版不同的只有这几点：
+
+- 已有文档先让用户在 PhotoCraft 里 ⌘S；跑完按 F12 载入（联动时自动）。`look` 不改文档，输出里写着 `(unchanged)`。
+- `--ai-light-redo` 是把原来那一遍删掉、按新档位另画一层放回「🌓 光影」组的最上面（Compositor 版是原地换像素）。用户在那一层上画过的同样会丢，先问。
+- PhotoCraft 画出来的和脚本自己算的逐像素相差不超过 1 级（`tests/run.sh light`）。
+
 ## 须知
 
 - **盖印层是快照**：骨相、眼神光、梦幻柔焦在 Compositor 里是实时调整层，PhotoCraft 没有对应的调整层，所以是"盖印下方画面的智能对象 + 智能滤镜"。在下面手修过就 `--refresh`；之后追加的模块插在它们下面时，脚本会自动重新盖印。
-- 重复运行不会堆第二套图层：高低频、中性灰、骨相、眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（换智能对象内容，蒙版保留），双曲线只补缺的那一层，只有辉光会叠加。
+- 重复运行不会堆第二套图层：高低频、中性灰、骨相、眼神光、同一种调色、颗粒、观察组已有就跳过（`[SKIP]`），磨皮按这次的参数原地重做（换智能对象内容，蒙版保留），双曲线只补缺的那一层，AI 光影已有就跳过（要重做加 `--ai-light-redo`），只有辉光会叠加。
 - 新图层按用途放进组，顺序和 compositor-retouch 一样：🎚️ 高低频 → 🧴 皮肤 → 🌓 光影 → 😊 五官 → 🎬 调色 → 🌟 辉光 → 胶片颗粒 → 观察组。组和图层都靠名字开头的 emoji 识别，改名时保留 emoji。
 - **检查图**：脚本在文档旁边写 `<名称>.checks/`，内容和 compositor-retouch 的一样（`overview.jpg` 等，由它计算）。**每次生成后用 Read 工具看 `overview.jpg`**，确认蒙版没盖到头发或衣服、红圈没落在五官上、预涂落在对应五官上、修后不发假，再把发现告诉用户。`--render` 的图是 PhotoCraft 自己合成的最终效果。
 - 文档较大：dr5 文档 8.5 MP 约 170 MB、24 MP 约 420 MB，新建分别约 5 秒、13 秒。24 MP 时 PhotoCraft 引擎约占 3.7 GB 内存、retouch_builder 约 4 GB；新建时两者先后运行，追加模块时同时运行。

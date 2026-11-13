@@ -1,7 +1,7 @@
 #!/bin/bash
 # Regression tests for compositor-retouch, all headless: nothing opens a window (no Compositor, no Finder).
 #
-#   tests/run.sh [suite ...]      suites: format skin-stack folders deep refresh vision glow render benches heal
+#   tests/run.sh [suite ...]      suites: format skin-stack folders deep refresh vision glow light render benches heal
 #                                         validator  (default: all; "timing" on request)
 #   PYTHON=/path/to/python3       the interpreter with the skill's dependencies (default: python3)
 #   PYTHON5=/path/to/python3      optional: one with OpenCV 5, to check the fallbacks there
@@ -941,10 +941,53 @@ json.dump(m, open(p, 'w'))"
 }
 
 suite_benches() {  # measured against the floors recorded when the modules were tuned
-    for bench in skin smoothing; do
+    for bench in skin smoothing light; do
         echo "  -- $bench"
         "$PY" "$HERE/bench.py" $bench 2>&1 | grep -v XNNPACK
     done
+}
+
+suite_light() {  # --ai-light: a first pass of dodge & burn, painted on a gray layer or on the two curves' masks
+    build --init "$PHOTO" --comp l.comp --ai-light look > look.log 2>&1; want 0 $? "--ai-light look on a new project"
+    has "...says what it measured, and what auto would make of it" grep -m1 "measured only, nothing added: skin patches differ.*auto would take" look.log
+    [ -s l.checks/light_look.jpg ] && echo "  ok: ...and writes the picture to judge the needs by" || echo "  BAD: no light_look.jpg"
+    cp l.comp/manifest.json look.json
+    build --comp l.comp --ai-light look --no-checks > /dev/null 2>&1; want 0 $? "a look at an existing project"
+    cmp -s l.comp/manifest.json look.json && echo "  ok: ...leaves it as it was" || echo "  BAD: a look changed the project"
+    build --comp l.comp --ai-light skin=clear,circles=clear,folds=clear --render l.render.png > add.log 2>&1
+    want 0 $? "the pass at full needs, on gray"
+    has "...reports what was measured and chosen" grep -m1 "AI 光影: skin patches differ.*skin=clear" add.log
+    has "...and how close the layer lands" grep -m1 "lands within 0.[0-4] levels" add.log
+    for picture in light.jpg light_bw.jpg light_map.jpg; do
+        [ -s "l.checks/$picture" ] && echo "  ok: ...check image $picture" || echo "  BAD: no $picture"
+    done
+    validate l.comp
+    cp -R l.comp lf.comp
+    build --comp l.comp --ai-light > again.log 2>&1; want 0 $? "run again"
+    has "...the pass is not painted twice" grep -m1 "\[SKIP\] --ai-light: the project has its AI 光影 pass" again.log
+    cp l.comp/manifest.json before.json
+    build --comp l.comp --ai-light skin=some,circles=some,folds=none --ai-light-redo --no-checks > redo.log 2>&1
+    want 0 $? "--ai-light-redo with other needs"
+    build --comp l.comp --ai-light --ai-light-redo --ai-light-on curves --no-checks > kind.log 2>&1
+    want 1 $? "a redo on the other kind of layer is refused"
+    build --comp l.comp --ai-light skin=none,circles=none,folds=none --ai-light-redo --no-checks > none.log 2>&1
+    want 0 $? "every need none"
+    has "...paints nothing and says so" grep -m1 "\[SKIP\] --ai-light: every need is none" none.log
+    build --comp l.comp --neutral-gray --no-checks > gray.log 2>&1
+    has "...the pass is the neutral gray layer to go on painting on" grep -m1 "\[SKIP\] --neutral-gray" gray.log
+    validate l.comp
+    build --init "$PHOTO" --comp k.comp --ai-light skin=clear,circles=clear,folds=clear --ai-light-on curves \
+        --render k.render.png --no-checks > curves.log 2>&1; want 0 $? "the pass on the two curves"
+    validate k.comp
+    build --comp k.comp --dual-curves --no-checks > pair.log 2>&1
+    has "...its curves are the pair to go on brushing on" grep -m1 "\[SKIP\] --dual-curves" pair.log
+    build --init "$PHOTO" --comp d.comp --preset daily --ai-light --no-checks > daily.log 2>&1; want 0 $? "with the daily preset"
+    validate d.comp
+    build --comp l.comp --ai-light bogus > /dev/null 2>&1; want 2 $? "a need that is no need is refused"
+    "$PY" -c "from PIL import Image; Image.new('RGB', (600, 600), (120, 130, 140)).save('flat.png')"
+    build --init flat.png --comp f.comp --ai-light --no-checks > flat.log 2>&1; want 0 $? "a photo without a face"
+    has "...is left for the hand" grep -m1 "\[SKIP\] --ai-light: no face found" flat.log
+    "$PY" "$HERE/bench.py" lightcheck "$PHOTO" 2>&1 | grep -v XNNPACK
 }
 
 suite_heal() {  # planted spots of known size and place, healed by the smoothing before it smooths
@@ -1015,7 +1058,7 @@ from PIL import Image; Image.open('$PHOTO').resize((4400, 5500), Image.LANCZOS).
 # ---- run ----
 
 SUITES=("$@")
-[ ${#SUITES[@]} = 0 ] && SUITES=(format skin-stack folders deep refresh vision glow render benches heal validator)
+[ ${#SUITES[@]} = 0 ] && SUITES=(format skin-stack folders deep refresh vision glow light render benches heal validator)
 echo "compositor-retouch tests: $PY ($("$PY" --version 2>&1)), segmentation model: $MODEL, work: $WORK"
 failed=()
 for suite in "${SUITES[@]}"; do
